@@ -1,0 +1,9 @@
+[project]
+name = "thermal-test"
+version = "0.1.0"
+description = "HBM CL0 thermal characterization with fan-duty triggers"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.uv]
+package = false
