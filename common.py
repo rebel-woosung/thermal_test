@@ -39,31 +39,27 @@ class CurrentRowTag:
     tag: RowTag
 
 
-# --- HBM temp registry -----------------------------------------------------
-class HbmTempRegistry:
-    """Latest per-device HBM chiplet temps (CL0..CL3), published by the NPU
+# --- card temp registry ----------------------------------------------------
+class CardTempRegistry:
+    """Latest Card Temp (rbln-smi ``temperature``) per slot, published by the NPU
     collectors and read by the fan controller — so the fan reuses the monitoring
-    poll instead of issuing its own thermal read. ``max_temp`` is the single place
-    the overall max (across devices and chiplets) is computed."""
+    poll instead of issuing its own read."""
 
     def __init__(self) -> None:
-        self._temps: dict[int, list[float | None]] = {}
+        self._temps: dict[int, float | None] = {}
         self._lock = threading.Lock()
 
-    def publish(self, device_id: int, cl_temps: list[float | None]) -> None:
+    def publish(self, slot_id: int, temp: float | None) -> None:
         with self._lock:
-            self._temps[device_id] = cl_temps
+            self._temps[slot_id] = temp
 
     def clear(self) -> None:
         with self._lock:
             self._temps.clear()
 
-    def max_temp(self) -> float | None:
+    def snapshot(self) -> dict[int, float]:
         with self._lock:
-            values = [
-                t for temps in self._temps.values() for t in temps if isinstance(t, (int, float))
-            ]
-        return max(values) if values else None
+            return {slot: t for slot, t in self._temps.items() if isinstance(t, (int, float))}
 
 
 # --- background worker -----------------------------------------------------

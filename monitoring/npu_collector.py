@@ -14,9 +14,9 @@ from typing import Any
 import commands
 from commands import quiet_shell
 from common import (
+    CardTempRegistry,
     CurrentRowTag,
     Device,
-    HbmTempRegistry,
     append_row,
     ensure_header,
     now_iso,
@@ -42,34 +42,32 @@ class NpuMonitor:
 
     def __init__(
         self,
-        devices: list[Device],
         current_tag: CurrentRowTag,
         smc_temp_source: SmcTempSweeper,
-        hbm_registry: HbmTempRegistry,
+        card_temps: CardTempRegistry,
         out_dir: Path,
         server_id: str,
     ) -> None:
-        self._devices = devices
         self._current_tag = current_tag
         self._smc_temp_source = smc_temp_source
-        self._hbm_registry = hbm_registry
+        self._card_temps = card_temps
         self._out_dir = out_dir
         self._server_id = server_id
         self._collectors: list[NpuMetricCollector] = []
 
-    def start(self) -> None:
+    def start(self, devices: list[Device]) -> None:
         stop_event = threading.Event()
         self._collectors = [
             NpuMetricCollector(
                 dev,
                 self._current_tag,
                 self._smc_temp_source,
-                self._hbm_registry,
+                self._card_temps,
                 self._out_dir,
                 self._server_id,
                 stop_event,
             )
-            for dev in self._devices
+            for dev in devices
         ]
         for c in self._collectors:
             c.start()
@@ -77,8 +75,10 @@ class NpuMonitor:
     def stop(self) -> None:
         for c in self._collectors:
             c.stop(timeout=_STOP_TIMEOUT_SEC)
+            if c.is_alive():
+                logger.warning("[NpuMonitor] %s still running after %.0fs", c.name, _STOP_TIMEOUT_SEC)
         self._collectors = []
-        self._hbm_registry.clear()
+        self._card_temps.clear()
 
 
 class NpuMetricCollector(threading.Thread):
@@ -87,7 +87,7 @@ class NpuMetricCollector(threading.Thread):
         device: Device,
         current_tag: CurrentRowTag,
         smc_temp_source: SmcTempSweeper,
-        hbm_registry: HbmTempRegistry,
+        card_temps: CardTempRegistry,
         out_dir: Path,
         server_id: str,
         stop_event: threading.Event,
@@ -96,7 +96,7 @@ class NpuMetricCollector(threading.Thread):
         self._device = device
         self._current_tag = current_tag
         self._smc_temp_source = smc_temp_source
-        self._hbm_registry = hbm_registry
+        self._card_temps = card_temps
         self._server_id = server_id
         self._stop_event = stop_event
         self._ucie_warned = False
@@ -128,16 +128,20 @@ class NpuMetricCollector(threading.Thread):
                         "workload_code": tag.workload_code,
                         "iteration_index": tag.iteration_index,
                     }
-                    row.update(self._collect_smi())
-                    row.update(self._collect_thermal())
-                    row.update(self._collect_util())
-                    row.update(self._collect_ucie())
-                    row.update(self._collect_profile())
-                    row.update(self._collect_smc_pwr())
-                    row.update(self._collect_smc_temp())
+                    for collect in (
+                        self._collect_smi,
+                        self._collect_thermal,
+                        self._collect_util,
+                        self._collect_ucie,
+                        self._collect_profile,
+                        self._collect_smc_pwr,
+                        self._collect_smc_temp,
+                    ):
+                        if self._stop_event.is_set():
+                            return
+                        row.update(collect())
                 append_row(self._csv_path, _NPU_INTERNAL_KEYS, row)
-                cl_temps = [row.get(f"hbm_cl{i}_temp") for i in range(_CHIPLET_COUNT)]
-                self._hbm_registry.publish(self._device.device_id, cl_temps)
+                self._card_temps.publish(self._device.slot_id, row.get("temperature"))
                 error_logged = False
             except Exception as e:
                 if not error_logged:

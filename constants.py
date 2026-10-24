@@ -5,28 +5,27 @@ from __future__ import annotations
 from pathlib import Path
 
 # --------------------------------------------------------------------------
-# Fan control — HBM CL0 temp (°C) → fan duty (%)
+# Fan control — max fan, then hold Card Temp at baseline + rise (see fan_controller.py)
 # --------------------------------------------------------------------------
-# (hbm_cl0_temp_threshold_C, fan_duty_percent). The None threshold is the default
-# duty applied below the first real threshold. Real thresholds kept ascending.
-DUTY_TRIGGERS: list[tuple[int | None, int]] = [
-    (None, 20),
-    (40, 40),
-    (50, 50),
-    (60, 60),
-    (70, 70),
-    (80, 80),
-    (90, 90),
-    (92, 100),
-]
+# BMC fan zones. 0x00 NPU1-4, 0x01 NPU5-8, 0x02 CPU1, 0x03 CPU2.
+FAN_NPU_ZONES: list[int] = [0x00, 0x01]
+FAN_CPU_ZONES: list[int] = [0x02, 0x03]
+FAN_ZONES: list[int] = FAN_NPU_ZONES + FAN_CPU_ZONES
 
-# BMC fan zones set together. 0x00 NPU1-4, 0x01 NPU5-8, 0x02 CPU1, 0x03 CPU2.
-FAN_ZONES: list[int] = [0x00, 0x01, 0x02, 0x03]
+FAN_MAX_DUTY = 100
+FAN_MIN_DUTY = 20
+FAN_MAX_PHASE_RATIO = 0.5
+FAN_BASELINE_WINDOW_SEC = 30
+FAN_TARGET_RISE_C = 10
+FAN_CONTROL_INTERVAL_SEC = 10
+FAN_GAIN_PCT_PER_C = 1.0
+FAN_MAX_STEP_PCT = 5
+FAN_DEADBAND_C = 1.0
 
-# On exit, drop fans to the DUTY_TRIGGERS default duty as a safe fallback. Set None to leave as-is.
-RESTORE_FAN_DUTY_ON_EXIT: int | None = DUTY_TRIGGERS[0][1]
+# On exit, drop all fans to this duty as a safe fallback. Set None to leave as-is.
+RESTORE_FAN_DUTY_ON_EXIT: int | None = 20
 
-# How often the fan controller samples HBM CL0 and re-evaluates the duty tier.
+# How often the fan controller samples Card Temp and logs fan_control.csv.
 FAN_POLL_INTERVAL_SEC = 1
 
 # --------------------------------------------------------------------------

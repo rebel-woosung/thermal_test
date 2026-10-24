@@ -1,5 +1,5 @@
-"""HBM CL0 thermal test — run the workloads/CR03.json stages while a fan controller
-steps the BMC fan duty by HBM CL0 temperature, collecting NPU/server/SMC metrics.
+"""Card thermal test — run the workloads/CR03.json stages while a fan controller
+steps the BMC fan duty by the max Card Temp, collecting NPU/server/SMC metrics.
 
 Run (foreground):  cd thermal_test && uv run python main.py
 """
@@ -23,7 +23,7 @@ from pathlib import Path
 
 import commands
 from commands import CommandFailedError
-from common import CurrentRowTag, Device, HbmTempRegistry, RowTag
+from common import CardTempRegistry, CurrentRowTag, Device, RowTag
 from constants import (
     FAN_ZONES,
     LOG_DIR,
@@ -41,7 +41,6 @@ logger = logging.getLogger(__name__)
 
 _NOPASSWD_SUDOERS = "/etc/sudoers.d/99-thermal-test-nopasswd"
 _HWCFG_LABEL = "HW_CFG"
-_HARD_RESET_LABEL = "HARD_RESET"
 _REST_LABEL = "REST"
 _STAGES: tuple[tuple[str, str], ...] = (
     ("iteration", "Iteration"),
@@ -63,10 +62,6 @@ _FW_INIT_POLL_SEC = 5
 
 class HwCfgError(Exception):
     """hw_cfg verify failed after a workload's write + hard reset — abort the run."""
-
-
-class HardResetError(Exception):
-    """A device did not come back from hard reset — abort the run."""
 
 
 def main() -> None:
@@ -102,12 +97,12 @@ def _run_session(run_dir: Path) -> None:
         return
 
     session_stop = threading.Event()
-    hbm_registry = HbmTempRegistry()
+    card_temps = CardTempRegistry()
     current_tag = CurrentRowTag(replace(runs[0][0], workload_code=_HWCFG_LABEL))
     smc = SmcTempSweeper(devices, session_stop)
-    fan = FanController(hbm_registry, run_dir, session_stop)
+    fan = FanController(card_temps, current_tag, run_dir, session_stop)
     server = ServerMetricCollector(current_tag, run_dir, server_id, session_stop)
-    npu = NpuMonitor(devices, current_tag, smc, hbm_registry, run_dir, server_id)
+    npu = NpuMonitor(current_tag, smc, card_temps, run_dir, server_id)
     smc.start()
     fan.start()
     server.start()
@@ -124,10 +119,9 @@ def _run_session(run_dir: Path) -> None:
                 wl["workload_type"],
                 wl["test_time_sec"] // 60,
             )
-            _run_workload(tag, wl, devices, npu, current_tag, run_dir)
+            _run_workload(tag, wl, devices, npu, fan, current_tag, run_dir)
             if n < len(runs):
                 current_tag.tag = replace(tag, workload_code=_REST_LABEL)
-                npu.start()
                 logger.info("resting %d min before next workload", REST_SEC // 60)
                 if session_stop.wait(REST_SEC):
                     break
@@ -194,67 +188,81 @@ def _slot_for(bus_address: str, device_id: int) -> int:
     return device_id
 
 
-def _apply_hwcfg(devices: list[Device], hwcfg: dict) -> None:
-    """Engine UpdateHwCfgStep: write once, then (hard reset → 5s → verify) up to 3 times."""
+def _apply_hwcfg(devices: list[Device], hwcfg: dict) -> list[Device]:
+    """Engine UpdateHwCfgStep per card — write, then (hard reset → 5s → verify) up to 3 times;
+    returns the cards ready for this run. A card that fails is only left out of this run."""
     logger.info("applying hw_cfg %s to %d device(s)", hwcfg, len(devices))
-    _write_hwcfg(devices, hwcfg)
+    pending = list(devices)
+    left_out: list[Device] = []
     for attempt in range(1, _HWCFG_VERIFY_ATTEMPTS + 1):
-        _hard_reset(devices)
+        for d in pending:
+            _write_hwcfg(d, hwcfg)
+        recovered = _hard_reset(pending)
+        left_out += [d for d in pending if d not in recovered]
         logger.info("delay %ds", _POST_RESET_DELAY_SEC)
         time.sleep(_POST_RESET_DELAY_SEC)
-        unverified = _unverified_devices(devices, hwcfg)
-        if not unverified:
-            logger.info("hw_cfg applied + verified on all devices")
-            return
+        pending = _unverified_devices(recovered, hwcfg)
+        if not pending:
+            break
         logger.warning(
             "hw_cfg verify FAIL on attempt %d/%d (slots %s)",
             attempt,
             _HWCFG_VERIFY_ATTEMPTS,
-            [d.slot_id for d in unverified],
+            [d.slot_id for d in pending],
         )
-    raise HwCfgError(
-        f"hw_cfg verify failed after {_HWCFG_VERIFY_ATTEMPTS} attempts: "
-        f"slots {[d.slot_id for d in unverified]}"
-    )
+    left_out += pending
+    ready = [d for d in devices if d not in left_out]
+    if left_out:
+        logger.error(
+            "slots %s left out of this run (hw_cfg / hard reset failed); retried at the next run",
+            sorted(d.slot_id for d in left_out),
+        )
+    logger.info("hw_cfg applied + verified on slots %s", [d.slot_id for d in ready])
+    return ready
 
 
-def _write_hwcfg(devices: list[Device], hwcfg: dict) -> None:
-    for d in devices:
-        if commands.read_hw_cfg(d.device_id) == hwcfg:
-            logger.info("slot %d: hw_cfg matches target, skip write", d.slot_id)
-            continue
+def _write_hwcfg(device: Device, hwcfg: dict) -> None:
+    if commands.read_hw_cfg(device.device_id) == hwcfg:
+        logger.info("slot %d: hw_cfg matches target, skip write", device.slot_id)
+        return
+    try:
         commands.write_hw_cfg(
-            d.device_id, hwcfg["dcluster_clk"], hwcfg["hbm3_data_rate"], hwcfg["dnc_core_vol"]
+            device.device_id, hwcfg["dcluster_clk"], hwcfg["hbm3_data_rate"], hwcfg["dnc_core_vol"]
         )
-        applied = commands.read_hw_cfg(d.device_id)
-        if applied != hwcfg:
-            raise HwCfgError(f"slot {d.slot_id} (rbln{d.device_id}): applied hw_cfg {applied} != {hwcfg}")
-        logger.info("slot %d: hw_cfg written → %s", d.slot_id, hwcfg)
+    except Exception as e:
+        logger.error("slot %d: hw_cfg write failed: %s", device.slot_id, e)
+        return
+    applied = commands.read_hw_cfg(device.device_id)
+    if applied != hwcfg:
+        logger.error("slot %d: applied hw_cfg %s != %s", device.slot_id, applied, hwcfg)
+        return
+    logger.info("slot %d: hw_cfg written → %s", device.slot_id, hwcfg)
 
 
-def _hard_reset(devices: list[Device]) -> None:
-    """Engine ExecuteHardResetAction: reset all in parallel, wait status=normal, then FW init."""
+def _hard_reset(devices: list[Device]) -> list[Device]:
+    """Engine ExecuteHardResetAction per card — reset in parallel, wait status=normal, then FW
+    init; returns the cards that came back."""
     with ThreadPoolExecutor(max_workers=len(devices)) as pool:
-        for future in as_completed([pool.submit(_trigger_hard_reset, d) for d in devices]):
-            future.result()
-    _wait_for(
-        devices,
+        triggered = [d for d, ok in zip(devices, pool.map(_trigger_hard_reset, devices)) if ok]
+    normal = _wait_for(
+        triggered,
         lambda s: s.get("status") == "normal",
         "status=normal",
         _NORMAL_TIMEOUT_SEC,
         _NORMAL_POLL_SEC,
     )
-    _wait_for(
-        devices,
+    recovered = _wait_for(
+        normal,
         lambda s: _num(s.get("temperature")) > 0 and _num(s.get("card_power")) > 0,
         "FW initialized (temp/power > 0)",
         _FW_INIT_TIMEOUT_SEC,
         _FW_INIT_POLL_SEC,
     )
-    _refresh_device_ids(devices)
+    _refresh_device_ids(recovered)
+    return recovered
 
 
-def _trigger_hard_reset(device: Device) -> None:
+def _trigger_hard_reset(device: Device) -> bool:
     try:
         commands.hard_reset(device.device_id)
     except Exception as e:
@@ -265,8 +273,13 @@ def _trigger_hard_reset(device: Device) -> None:
             _RESET_RETRY_DELAY_SEC,
         )
         time.sleep(_RESET_RETRY_DELAY_SEC)
-        commands.hard_reset(device.device_id)
+        try:
+            commands.hard_reset(device.device_id)
+        except Exception as e2:
+            logger.error("slot %d: hard reset trigger failed after retry: %s", device.slot_id, e2)
+            return False
     logger.info("slot %d: hard reset triggered", device.slot_id)
+    return True
 
 
 def _wait_for(
@@ -275,18 +288,22 @@ def _wait_for(
     what: str,
     timeout_sec: int,
     poll_sec: int,
-) -> None:
+) -> list[Device]:
+    """Poll rbln-smi until every card is ``what`` or the timeout; returns the cards that got there."""
+    if not devices:
+        return []
     deadline = time.monotonic() + timeout_sec
     while True:
         by_bus = _snapshot_by_bus()
         pending = [d for d in devices if not is_ready(by_bus.get(d.bus_address, {}))]
         if not pending:
             logger.info("all devices %s", what)
-            return
+            return list(devices)
         if time.monotonic() >= deadline:
-            raise HardResetError(
-                f"slots {[d.slot_id for d in pending]} not {what} {timeout_sec}s after hard reset"
+            logger.error(
+                "slots %s not %s %ds after hard reset", [d.slot_id for d in pending], what, timeout_sec
             )
+            return [d for d in devices if d not in pending]
         logger.info("waiting for %s (%d pending, sleep %ds)", what, len(pending), poll_sec)
         time.sleep(poll_sec)
 
@@ -346,45 +363,52 @@ def _run_workload(
     wl: dict,
     devices: list[Device],
     npu: NpuMonitor,
+    fan: FanController,
     current_tag: CurrentRowTag,
     run_dir: Path,
 ) -> None:
     npu.stop()
+    fan.hold_max()
     current_tag.tag = replace(tag, workload_code=_HWCFG_LABEL)
-    _apply_hwcfg(devices, wl["hwcfg"])
+    ready = _apply_hwcfg(devices, wl["hwcfg"])
+    if not ready:
+        raise HwCfgError(f"no device ready after hw_cfg {wl['hwcfg']}")
     current_tag.tag = tag
-    npu.start()
+    npu.start(ready)
+    fan.begin_workload(wl["test_time_sec"])
 
-    with ThreadPoolExecutor(max_workers=len(devices)) as executor:
-        futures = [executor.submit(_retrace_device, dev, wl, run_dir) for dev in devices]
+    with ThreadPoolExecutor(max_workers=len(ready)) as executor:
+        futures = [executor.submit(_retrace_device, dev, tag, wl, run_dir) for dev in ready]
         for future in as_completed(futures):
             future.result()
-
-    npu.stop()
-    current_tag.tag = replace(tag, workload_code=_HARD_RESET_LABEL)
-    logger.info("workload done — hard reset")
-    _hard_reset(devices)
+    fan.hold_max()
 
 
-def _retrace_device(device: Device, wl: dict, run_dir: Path) -> None:
+def _retrace_device(device: Device, tag: RowTag, wl: dict, run_dir: Path) -> None:
     paths = [str(WORKLOAD_DIR / f) for f in wl["filename"]]
     test_time_sec = wl["test_time_sec"]
+    log_dir = run_dir / f"test_unit_{wl['test_unit_id']}" / f"dev_slot_{device.slot_id:02d}"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    stdout_logs = [
+        log_dir / f"{tag.iteration_index:02d}_{wl['code']}_{Path(f).stem}.log" for f in wl["filename"]
+    ]
 
     if wl["workload_type"] == "DTC_SINGLE":
         with ThreadPoolExecutor(max_workers=len(paths)) as pool:
             futures = [
-                pool.submit(_retrace_one, device, p, run_dir, wl["code"], test_time_sec, idx)
-                for idx, p in enumerate(paths)
+                pool.submit(_retrace_one, device, p, log, run_dir, wl["code"], test_time_sec, idx)
+                for idx, (p, log) in enumerate(zip(paths, stdout_logs))
             ]
             for future in as_completed(futures):
                 future.result()
     else:
-        _retrace_one(device, paths[0], run_dir, wl["code"], test_time_sec, None)
+        _retrace_one(device, paths[0], stdout_logs[0], run_dir, wl["code"], test_time_sec, None)
 
 
 def _retrace_one(
     device: Device,
     path: str,
+    stdout_log: Path,
     run_dir: Path,
     code: str,
     test_time_sec: int,
@@ -397,13 +421,39 @@ def _retrace_one(
             workload_path=path,
             test_time_sec=test_time_sec,
             log_dir=str(run_dir),
+            stdout_log=stdout_log,
         )
     except subprocess.TimeoutExpired as e:
         logger.error("rbln%d %s%s: retrace timed out: %s", device.device_id, code, suffix, e)
     except CommandFailedError as e:
-        logger.error("rbln%d %s%s: retrace failed: %s", device.device_id, code, suffix, e)
+        logger.error(
+            "rbln%d %s%s: retrace failed (rc %d)%s",
+            device.device_id,
+            code,
+            suffix,
+            e.returncode,
+            f": {e.stderr}" if e.stderr else "",
+        )
     except Exception as e:
         logger.error("rbln%d %s%s: retrace error: %s", device.device_id, code, suffix, e)
+    logger.info(
+        "slot %d %s%s: %s",
+        device.slot_id,
+        code,
+        suffix,
+        _retrace_report(stdout_log) or f"no rblntrace Report line in {stdout_log.name}",
+    )
+
+
+def _retrace_report(stdout_log: Path) -> str | None:
+    try:
+        lines = stdout_log.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        if "Report:" in line:
+            return line[line.index("Report:") :].strip()
+    return None
 
 
 def _handle_sigint(signum: int, frame: object) -> None:
