@@ -182,7 +182,7 @@
         "filename": [
           "rblntrace_tdp_max_test_48.bin"
         ],
-        "test_time_sec": 7100,
+        "test_time_sec": 1580,
         "workload_type": "STC",
         "hwcfg": {
           "dcluster_clk": 1400,
@@ -196,7 +196,7 @@
         "filename": [
           "rblntrace_202604101738-0.10.3_llama3.3-70b-kv_b1_rsd4_0.bin"
         ],
-        "test_time_sec": 7100,
+        "test_time_sec": 1580,
         "workload_type": "DTC_LLM",
         "hwcfg": {
           "dcluster_clk": 1400,
@@ -210,7 +210,7 @@
         "filename": [
           "rblntrace_202604101753-0.10.3_gpt-oss-120b_b1_rsd4_0.bin"
         ],
-        "test_time_sec": 7100,
+        "test_time_sec": 1580,
         "workload_type": "DTC_LLM",
         "hwcfg": {
           "dcluster_clk": 1400,
@@ -228,7 +228,7 @@
         "filename": [
           "rblntrace_tdp_max_test_48.bin"
         ],
-        "test_time_sec": 7100,
+        "test_time_sec": 1580,
         "workload_type": "STC",
         "hwcfg": {
           "dcluster_clk": 1000,
@@ -242,7 +242,7 @@
         "filename": [
           "rblntrace_202604101738-0.10.3_llama3.3-70b-kv_b1_rsd4_0.bin"
         ],
-        "test_time_sec": 7100,
+        "test_time_sec": 1580,
         "workload_type": "DTC_LLM",
         "hwcfg": {
           "dcluster_clk": 1000,
@@ -256,7 +256,7 @@
         "filename": [
           "rblntrace_202604101753-0.10.3_gpt-oss-120b_b1_rsd4_0.bin"
         ],
-        "test_time_sec": 7100,
+        "test_time_sec": 1580,
         "workload_type": "DTC_LLM",
         "hwcfg": {
           "dcluster_clk": 1000,
