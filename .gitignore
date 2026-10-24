@@ -1,0 +1,49 @@
+############################
+# OS / Editor
+############################
+.DS_Store
+._.DS_Store
+.vscode/
+.codex
+
+############################
+# Node
+############################
+node_modules/
+
+############################
+# Python
+############################
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.venv/
+
+############################
+# Logs
+############################
+*.log
+
+############################
+# Build / Packaging Outputs
+############################
+build/
+dist/
+release/
+build_backend/
+*.spec
+*.zip
+*.tar.gz
+
+# PyInstaller (or similar)
+.pyi-build/
+.pyi-spec/
+
+############################
+# Local runtime / state
+############################
+var/*
+etc/*
+
+sudo_password.txt
+build_work_*
