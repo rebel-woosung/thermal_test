@@ -1,5 +1,4 @@
-"""Shell helpers + command wrappers over rbln / rbln-smi / rbln-smcif /
-rblntrace / ipmitool.
+"""Shell helpers + command wrappers over rbln / rbln-smi / rblntrace / ipmitool.
 
 Assumes NOPASSWD sudo. ``quiet_shell()`` suppresses the per-call command log so
 the ~1 Hz collectors don't flood the console.
@@ -22,7 +21,6 @@ from typing import IO, Any
 
 logger = logging.getLogger(__name__)
 
-RBLN_SMCIF_CMD = "rbln-smcif"
 RBLN_SMI_CMD = "rbln-smi"
 RBLN_TRACE_CMD = "rblntrace"
 IPMITOOL_CMD = "ipmitool"
@@ -108,15 +106,6 @@ def get_device_snapshot(device_id: int) -> dict[str, Any]:
         return {}
 
 
-def dmidecode_slot_for(bus_address: str) -> str:
-    cmd = f"dmidecode -t slot | grep {bus_address} -B4 | grep ID: | awk '{{print $2}}'"
-    try:
-        return run_sudo_command(cmd)
-    except Exception as e:
-        logger.warning("%s failed: %s", cmd, e)
-        return ""
-
-
 # --- metric reads (best-effort, warn once) ---------------------------------
 def read_thermal(device_id: int, chiplet_id: int | None = None) -> str:
     cmd = f"rbln sysinfo -t thermal -d {device_id}"
@@ -139,14 +128,6 @@ def read_ucie(device_id: int, chiplet_id: int) -> str:
 
 def read_smc_pwr(device_id: int) -> str:
     return _read_warn_once(f"rbln sysinfo -t smc_pwr -d {device_id}")
-
-
-def read_smc_power_mon(slot_id: int) -> str:
-    return _read_warn_once(f"{RBLN_SMCIF_CMD} power_mon -s {slot_id} -j")
-
-
-def read_smc_sensor_mon(slot_id: int) -> str:
-    return _read_warn_once(f"{RBLN_SMCIF_CMD} sensor_mon -s {slot_id} -j")
 
 
 def read_sensor_records() -> str:

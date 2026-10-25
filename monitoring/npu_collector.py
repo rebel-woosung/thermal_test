@@ -1,6 +1,6 @@
 """Per-device NPU monitoring — CP + SMC into one CSV row.
 
-Output: ``<out_dir>/npu_monitoring_slot_<slot>.csv`` — one file per device.
+Output: ``<out_dir>/npu_monitoring_<bus>.csv`` — one file per device.
 """
 
 from __future__ import annotations
@@ -29,7 +29,6 @@ from common import (
     strip_unit,
 )
 from constants import NPU_INTERVAL_SEC
-from monitoring.smc_sweeper import OOB_PWR_COLUMNS, SMC_TEMP_COLUMNS, SmcTempSweeper
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +42,11 @@ class NpuMonitor:
     def __init__(
         self,
         current_tag: CurrentRowTag,
-        smc_temp_source: SmcTempSweeper,
         card_temps: CardTempRegistry,
         out_dir: Path,
         server_id: str,
     ) -> None:
         self._current_tag = current_tag
-        self._smc_temp_source = smc_temp_source
         self._card_temps = card_temps
         self._out_dir = out_dir
         self._server_id = server_id
@@ -61,7 +58,6 @@ class NpuMonitor:
             NpuMetricCollector(
                 dev,
                 self._current_tag,
-                self._smc_temp_source,
                 self._card_temps,
                 self._out_dir,
                 self._server_id,
@@ -86,7 +82,6 @@ class NpuMetricCollector(threading.Thread):
         self,
         device: Device,
         current_tag: CurrentRowTag,
-        smc_temp_source: SmcTempSweeper,
         card_temps: CardTempRegistry,
         out_dir: Path,
         server_id: str,
@@ -95,12 +90,11 @@ class NpuMetricCollector(threading.Thread):
         super().__init__(name=f"npu-metric-{device.device_id}", daemon=False)
         self._device = device
         self._current_tag = current_tag
-        self._smc_temp_source = smc_temp_source
         self._card_temps = card_temps
         self._server_id = server_id
         self._stop_event = stop_event
         self._ucie_warned = False
-        self._csv_path = out_dir / f"npu_monitoring_slot_{device.slot_id:02d}.csv"
+        self._csv_path = out_dir / f"npu_monitoring_{device.path_safe_bus}.csv"
         ensure_header(self._csv_path, NPU_HEADER)
 
     def stop(self, timeout: float = 5.0) -> None:
@@ -123,9 +117,10 @@ class NpuMetricCollector(threading.Thread):
                         "timestamp": now_iso(),
                         "server_id": self._server_id,
                         "card_serial_num": self._device.sid,
-                        "slot_id": self._device.slot_id,
+                        "bus_address": self._device.bus_address,
                         "stage_type": tag.stage_type,
                         "workload_code": tag.workload_code,
+                        "phase": tag.phase,
                         "iteration_index": tag.iteration_index,
                     }
                     for collect in (
@@ -135,13 +130,14 @@ class NpuMetricCollector(threading.Thread):
                         self._collect_ucie,
                         self._collect_profile,
                         self._collect_smc_pwr,
-                        self._collect_smc_temp,
                     ):
                         if self._stop_event.is_set():
                             return
                         row.update(collect())
                 append_row(self._csv_path, _NPU_INTERNAL_KEYS, row)
-                self._card_temps.publish(self._device.slot_id, row.get("temperature"))
+                self._card_temps.publish(
+                    self._device.bus_address, row.get("temperature"), _hottest_hbm(row)
+                )
                 error_logged = False
             except Exception as e:
                 if not error_logged:
@@ -206,8 +202,10 @@ class NpuMetricCollector(threading.Thread):
         out = commands.read_smc_pwr(self._device.device_id)
         return {k: parse_smc(out, k) for k, _ in _SMC_PWR_COLUMNS}
 
-    def _collect_smc_temp(self) -> dict[str, Any]:
-        return self._smc_temp_source.snapshot_for(self._device.device_id)
+
+def _hottest_hbm(row: dict[str, Any]) -> float | None:
+    temps = [row.get(f"hbm_cl{chip}_temp") for chip in range(_CHIPLET_COUNT)]
+    return max((t for t in temps if isinstance(t, (int, float))), default=None)
 
 
 # --- CSV columns -----------------------------------------------------------
@@ -290,25 +288,27 @@ _SMC_PWR_COLUMNS: tuple[tuple[str, str], ...] = (
     ("ldo_3p3v_current", "LDO 3.3v current"),
 )
 
-_NPU_COLUMNS = _CP_COLUMNS + _SMC_PWR_COLUMNS + SMC_TEMP_COLUMNS + OOB_PWR_COLUMNS
+_NPU_COLUMNS = _CP_COLUMNS + _SMC_PWR_COLUMNS
 
 NPU_HEADER: tuple[str, ...] = (
     "Serial Number",
-    "Slot ID",
+    "Bus Address",
     "Timestamp",
     "Server ID",
     "Stage Type",
     "workload_code",
+    "phase",
     *(h for _, h in _NPU_COLUMNS),
     "iteration_index",
 )
 _NPU_INTERNAL_KEYS: tuple[str, ...] = (
     "card_serial_num",
-    "slot_id",
+    "bus_address",
     "timestamp",
     "server_id",
     "stage_type",
     "workload_code",
+    "phase",
     *(k for k, _ in _NPU_COLUMNS),
     "iteration_index",
 )

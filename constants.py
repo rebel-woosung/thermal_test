@@ -14,9 +14,7 @@ FAN_ZONES: list[int] = FAN_NPU_ZONES + FAN_CPU_ZONES
 
 FAN_MAX_DUTY = 100
 FAN_MIN_DUTY = 20
-FAN_MAX_PHASE_RATIO = 0.5
 FAN_BASELINE_WINDOW_SEC = 30
-FAN_TARGET_RISE_C = 10
 FAN_CONTROL_INTERVAL_SEC = 10
 FAN_GAIN_PCT_PER_C = 1.0
 FAN_MAX_STEP_PCT = 5
@@ -38,15 +36,11 @@ WORKLOAD_DIR = Path("/data/rbcn/rb-srt-main-engine/workload")
 # Main-engine workload config: stages run in engine order, iteration × repeat_count.
 WORKLOADS_JSON = Path(__file__).resolve().parent / "workloads" / "CR03.json"
 
-# Rest between consecutive workloads.
-REST_SEC = 10 * 60
-
 # --------------------------------------------------------------------------
 # Monitoring
 # --------------------------------------------------------------------------
 NPU_INTERVAL_SEC = 1
 SERVER_BMC_INTERVAL_SEC = 5
-SMC_SWEEP_PAUSE_SEC = 1.0
 
 # Logs + CSV output — each run writes to a new log/<timestamp>/ folder.
 LOG_DIR = Path(__file__).resolve().parent / "log"

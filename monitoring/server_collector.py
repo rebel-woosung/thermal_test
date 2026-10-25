@@ -54,6 +54,7 @@ class ServerMetricCollector(threading.Thread):
                         "server_id": self._server_id,
                         "stage_type": tag.stage_type,
                         "workload_code": tag.workload_code,
+                        "phase": tag.phase,
                         "iteration_index": tag.iteration_index,
                     }
                     row.update(self._collect())
@@ -103,6 +104,7 @@ SERVER_HEADER: tuple[str, ...] = (
     "Server ID",
     "Stage Type",
     "workload_code",
+    "phase",
     *(h for _, _, h in _TEMP_COLUMNS),
     *(h for _, _, h in _FAN_COLUMNS),
     *(h for _, _, h in _POWER_COLUMNS),
@@ -113,6 +115,7 @@ _SERVER_INTERNAL_KEYS: tuple[str, ...] = (
     "server_id",
     "stage_type",
     "workload_code",
+    "phase",
     *(k for _, k, _ in _TEMP_COLUMNS),
     *(k for _, k, _ in _FAN_COLUMNS),
     *(k for _, k, _ in _POWER_COLUMNS),

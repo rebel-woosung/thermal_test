@@ -17,9 +17,13 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Device:
     device_id: int
-    slot_id: int
     bus_address: str
     sid: str
+
+    @property
+    def path_safe_bus(self) -> str:
+        """Bus address with ``:`` → ``-``, for file and directory names."""
+        return self.bus_address.replace(":", "-")
 
 
 # --- row tag ---------------------------------------------------------------
@@ -30,6 +34,7 @@ class RowTag:
     stage_type: str
     workload_code: str
     iteration_index: int
+    phase: str = ""
 
 
 @dataclass
@@ -41,25 +46,34 @@ class CurrentRowTag:
 
 # --- card temp registry ----------------------------------------------------
 class CardTempRegistry:
-    """Latest Card Temp (rbln-smi ``temperature``) per slot, published by the NPU
-    collectors and read by the fan controller — so the fan reuses the monitoring
-    poll instead of issuing its own read."""
+    """Latest Card Temp (rbln-smi ``temperature``) and hottest HBM temp per bus address,
+    published by the NPU collectors and read by the fan controller — so the fan reuses the
+    monitoring poll instead of issuing its own read."""
 
     def __init__(self) -> None:
-        self._temps: dict[int, float | None] = {}
+        self._temps: dict[str, float | None] = {}
+        self._hbm_temps: dict[str, float | None] = {}
         self._lock = threading.Lock()
 
-    def publish(self, slot_id: int, temp: float | None) -> None:
+    def publish(self, bus_address: str, temp: float | None, hbm_temp: float | None) -> None:
         with self._lock:
-            self._temps[slot_id] = temp
+            self._temps[bus_address] = temp
+            self._hbm_temps[bus_address] = hbm_temp
 
     def clear(self) -> None:
         with self._lock:
             self._temps.clear()
+            self._hbm_temps.clear()
 
-    def snapshot(self) -> dict[int, float]:
+    def snapshot(self) -> dict[str, float]:
         with self._lock:
-            return {slot: t for slot, t in self._temps.items() if isinstance(t, (int, float))}
+            return {bus: t for bus, t in self._temps.items() if isinstance(t, (int, float))}
+
+    def hottest(self) -> float | None:
+        """Highest Card or HBM temp across all cards."""
+        with self._lock:
+            temps = [*self._temps.values(), *self._hbm_temps.values()]
+        return max((t for t in temps if isinstance(t, (int, float))), default=None)
 
 
 # --- background worker -----------------------------------------------------

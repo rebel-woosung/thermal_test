@@ -1,6 +1,5 @@
 {
   "iteration": {
-    "repeat_count": 15,
     "workloads": [
       {
         "test_unit_id": 1,
@@ -8,7 +7,7 @@
         "filename": [
           "rblntrace_ucie_max_48.bin"
         ],
-        "test_time_sec": 180,
+        "test_time_sec": 1580,
         "workload_type": "STC",
         "hwcfg": {
           "dcluster_clk": 1000,
@@ -22,7 +21,7 @@
         "filename": [
           "rblntrace_test_hbm_max.bin"
         ],
-        "test_time_sec": 180,
+        "test_time_sec": 1580,
         "workload_type": "STC",
         "hwcfg": {
           "dcluster_clk": 1000,
@@ -174,52 +173,6 @@
       }
     ]
   },
-  "enhanced_stress": {
-    "workloads": [
-      {
-        "test_unit_id": 31,
-        "code": "RE0SR0003",
-        "filename": [
-          "rblntrace_tdp_max_test_48.bin"
-        ],
-        "test_time_sec": 1580,
-        "workload_type": "STC",
-        "hwcfg": {
-          "dcluster_clk": 1400,
-          "hbm3_data_rate": 6400,
-          "dnc_core_vol": 750
-        }
-      },
-      {
-        "test_unit_id": 41,
-        "code": "RE0MR0013",
-        "filename": [
-          "rblntrace_202604101738-0.10.3_llama3.3-70b-kv_b1_rsd4_0.bin"
-        ],
-        "test_time_sec": 1580,
-        "workload_type": "DTC_LLM",
-        "hwcfg": {
-          "dcluster_clk": 1400,
-          "hbm3_data_rate": 6400,
-          "dnc_core_vol": 750
-        }
-      },
-      {
-        "test_unit_id": 42,
-        "code": "RE0MR0014",
-        "filename": [
-          "rblntrace_202604101753-0.10.3_gpt-oss-120b_b1_rsd4_0.bin"
-        ],
-        "test_time_sec": 1580,
-        "workload_type": "DTC_LLM",
-        "hwcfg": {
-          "dcluster_clk": 1400,
-          "hbm3_data_rate": 6400,
-          "dnc_core_vol": 750
-        }
-      }
-    ]
-  },
   "baseline_stress": {
     "workloads": [
       {
@@ -255,148 +208,6 @@
         "code": "RE0MR0014",
         "filename": [
           "rblntrace_202604101753-0.10.3_gpt-oss-120b_b1_rsd4_0.bin"
-        ],
-        "test_time_sec": 1580,
-        "workload_type": "DTC_LLM",
-        "hwcfg": {
-          "dcluster_clk": 1000,
-          "hbm3_data_rate": 6400,
-          "dnc_core_vol": 750
-        }
-      }
-    ]
-  },
-  "poststress": {
-    "workloads": [
-      {
-        "test_unit_id": 71,
-        "code": "RE0SR0004",
-        "filename": [
-          "rblntrace_dcl_ucie_max_48.bin"
-        ],
-        "test_time_sec": 1580,
-        "workload_type": "STC",
-        "hwcfg": {
-          "dcluster_clk": 1000,
-          "hbm3_data_rate": 6400,
-          "dnc_core_vol": 750
-        }
-      },
-      {
-        "test_unit_id": 72,
-        "code": "RE0SR0005",
-        "filename": [
-          "rblntrace_dcl_hbm_max_48.bin"
-        ],
-        "test_time_sec": 1580,
-        "workload_type": "STC",
-        "hwcfg": {
-          "dcluster_clk": 1000,
-          "hbm3_data_rate": 6400,
-          "dnc_core_vol": 750
-        }
-      },
-      {
-        "test_unit_id": 73,
-        "code": "RE0SR0006",
-        "filename": [
-          "rblntrace_dcl_max_4_dep.bin"
-        ],
-        "test_time_sec": 1580,
-        "workload_type": "STC",
-        "hwcfg": {
-          "dcluster_clk": 1000,
-          "hbm3_data_rate": 6400,
-          "dnc_core_vol": 750
-        }
-      },
-      {
-        "test_unit_id": 81,
-        "code": "RE0MR0001",
-        "filename": [
-          "rblntrace_202604101654-0.10.3_resnet50_ss_0_0.bin",
-          "rblntrace_202604101654-0.10.3_resnet50_ss_1_0.bin",
-          "rblntrace_202604101654-0.10.3_resnet50_ss_2_0.bin",
-          "rblntrace_202604101654-0.10.3_resnet50_ss_3_0.bin"
-        ],
-        "test_time_sec": 1580,
-        "workload_type": "DTC_SINGLE",
-        "hwcfg": {
-          "dcluster_clk": 1000,
-          "hbm3_data_rate": 6400,
-          "dnc_core_vol": 750
-        }
-      },
-      {
-        "test_unit_id": 82,
-        "code": "RE0MR0002",
-        "filename": [
-          "rblntrace_202604101654-0.10.3_resnet50_ms_0_0.bin",
-          "rblntrace_202604101654-0.10.3_resnet50_ms_1_0.bin",
-          "rblntrace_202604101655-0.10.3_resnet50_ms_2_0.bin",
-          "rblntrace_202604101655-0.10.3_resnet50_ms_3_0.bin"
-        ],
-        "test_time_sec": 1580,
-        "workload_type": "DTC_SINGLE",
-        "hwcfg": {
-          "dcluster_clk": 1000,
-          "hbm3_data_rate": 6400,
-          "dnc_core_vol": 750
-        }
-      },
-      {
-        "test_unit_id": 83,
-        "code": "RE0MR0003",
-        "filename": [
-          "rblntrace_202604101655-0.10.3_retinanet_0_0.bin",
-          "rblntrace_202604101655-0.10.3_retinanet_1_0.bin",
-          "rblntrace_202604101656-0.10.3_retinanet_2_0.bin",
-          "rblntrace_202604101656-0.10.3_retinanet_3_0.bin"
-        ],
-        "test_time_sec": 1580,
-        "workload_type": "DTC_SINGLE",
-        "hwcfg": {
-          "dcluster_clk": 1000,
-          "hbm3_data_rate": 6400,
-          "dnc_core_vol": 750
-        }
-      },
-      {
-        "test_unit_id": 84,
-        "code": "RE0MR0004",
-        "filename": [
-          "rblntrace_202604101656-0.10.3_bert_large_0_0.bin",
-          "rblntrace_202604101657-0.10.3_bert_large_1_0.bin",
-          "rblntrace_202604101658-0.10.3_bert_large_2_0.bin",
-          "rblntrace_202604101658-0.10.3_bert_large_3_0.bin"
-        ],
-        "test_time_sec": 1580,
-        "workload_type": "DTC_SINGLE",
-        "hwcfg": {
-          "dcluster_clk": 1000,
-          "hbm3_data_rate": 6400,
-          "dnc_core_vol": 750
-        }
-      },
-      {
-        "test_unit_id": 85,
-        "code": "RE0MR0011",
-        "filename": [
-          "rblntrace_202604101814-0.10.3_qwen2-7b_b1_rsd4_0.bin"
-        ],
-        "test_time_sec": 1580,
-        "workload_type": "DTC_LLM",
-        "hwcfg": {
-          "dcluster_clk": 1000,
-          "hbm3_data_rate": 6400,
-          "dnc_core_vol": 750
-        }
-      },
-      {
-        "test_unit_id": 86,
-        "code": "RE0MR0012",
-        "filename": [
-          "rblntrace_202604101807-0.10.3_gpt-oss-120b_b4_rsd4_0.bin"
         ],
         "test_time_sec": 1580,
         "workload_type": "DTC_LLM",

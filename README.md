@@ -12,4 +12,4 @@ uv run python main.py   # sudo 비번 1회 입력
 - `server.log`
 - `fan_control.csv`
 - `server_monitoring.csv`
-- `npu_monitoring_slot_XX.csv` (Device별)
+- `npu_monitoring_<bus>.csv` (Device별, 예: `npu_monitoring_0000-03-00.0.csv`)
