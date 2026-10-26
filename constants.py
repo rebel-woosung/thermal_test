@@ -1,30 +1,8 @@
-"""Thermal-test tunables and constants. Workloads live in workloads/CR03.json."""
+"""Thermal-test tunables and constants. Workloads live in workloads/CR03.json, fan control in fan_control/."""
 
 from __future__ import annotations
 
 from pathlib import Path
-
-# --------------------------------------------------------------------------
-# Fan control — max fan, then hold Card Temp at baseline + rise (see fan_controller.py)
-# --------------------------------------------------------------------------
-# BMC fan zones. 0x00 NPU1-4, 0x01 NPU5-8, 0x02 CPU1, 0x03 CPU2.
-FAN_NPU_ZONES: list[int] = [0x00, 0x01]
-FAN_CPU_ZONES: list[int] = [0x02, 0x03]
-FAN_ZONES: list[int] = FAN_NPU_ZONES + FAN_CPU_ZONES
-
-FAN_MAX_DUTY = 100
-FAN_MIN_DUTY = 20
-FAN_BASELINE_WINDOW_SEC = 30
-FAN_CONTROL_INTERVAL_SEC = 10
-FAN_GAIN_PCT_PER_C = 1.0
-FAN_MAX_STEP_PCT = 5
-FAN_DEADBAND_C = 1.0
-
-# On exit, drop all fans to this duty as a safe fallback. Set None to leave as-is.
-RESTORE_FAN_DUTY_ON_EXIT: int | None = 20
-
-# How often the fan controller samples Card Temp and logs fan_control.csv.
-FAN_POLL_INTERVAL_SEC = 1
 
 # --------------------------------------------------------------------------
 # Workloads

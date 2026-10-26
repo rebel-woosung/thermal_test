@@ -1,6 +1,6 @@
-"""Card thermal test — run each workloads/CR03.json workload through four fan phases
-(MAX → TARGET → duty sweep down → duty sweep up, see test_config.py), with a hard reset
-before every segment, collecting NPU/server/SMC metrics.
+"""Card thermal test — run each workloads/CR03.json workload through its fan phases
+(MAX → TARGET once per FAN_TARGET_CONTROLS law → duty sweep down → duty sweep up, see
+test_config.py), with a hard reset before every segment, collecting NPU/server/SMC metrics.
 
 Run (foreground):  cd thermal_test && uv run python main.py
 """
@@ -25,17 +25,14 @@ from pathlib import Path
 import commands
 from commands import CommandFailedError
 from common import CardTempRegistry, CurrentRowTag, Device, RowTag
-from constants import (
-    FAN_ZONES,
-    LOG_DIR,
-    RESTORE_FAN_DUTY_ON_EXIT,
-    WORKLOAD_DIR,
-    WORKLOADS_JSON,
-)
-from fan_controller import FanController
+from constants import LOG_DIR, WORKLOAD_DIR, WORKLOADS_JSON
+from fan_control import target_control
+from fan_control.constants import FAN_ZONES, RESTORE_FAN_DUTY_ON_EXIT
+from fan_control.controller import FanController
 from monitoring.npu_collector import NpuMonitor
 from monitoring.server_collector import ServerMetricCollector
 from test_config import (
+    FAN_TARGET_CONTROLS,
     FAN_TARGET_RISE_C,
     MAX_PHASE_SEC,
     REST_SEC,
@@ -87,6 +84,7 @@ class _Segment:
     phase: str
     duration_sec: int
     duty: int | None
+    control: str | None
     starts_phase: bool
 
 
@@ -109,6 +107,7 @@ def _run_session(run_dir: Path) -> None:
     if not runs:
         logger.error("no workloads in %s — aborting", WORKLOADS_JSON)
         return
+    target_control.validate(FAN_TARGET_CONTROLS)
     segments = _segments()
     steps = [(replace(tag, phase=seg.phase), wl, seg) for tag, wl in runs for seg in segments]
     work_sec = len(runs) * sum(seg.duration_sec for seg in segments)
@@ -125,12 +124,13 @@ def _run_session(run_dir: Path) -> None:
     )
     logger.info(
         "test_config: MAX_PHASE_SEC=%s, TARGET_PHASE_SEC=%s, SWEEP_STEP_SEC=%s, SWEEP_DUTIES=%s,"
-        " FAN_TARGET_RISE_C=%s, SWEEP_SAFETY_TEMP_C=%s, REST_SEC=%s",
+        " FAN_TARGET_RISE_C=%s, FAN_TARGET_CONTROLS=%s, SWEEP_SAFETY_TEMP_C=%s, REST_SEC=%s",
         MAX_PHASE_SEC,
         TARGET_PHASE_SEC,
         SWEEP_STEP_SEC,
         SWEEP_DUTIES,
         FAN_TARGET_RISE_C,
+        FAN_TARGET_CONTROLS,
         SWEEP_SAFETY_TEMP_C,
         REST_SEC,
     )
@@ -204,18 +204,21 @@ def _load_runs() -> list[tuple[RowTag, dict]]:
 
 
 def _segments() -> list[_Segment]:
-    """MAX → TARGET → sweep down SWEEP_DUTIES → sweep back up, one retrace run per segment."""
-    plan: tuple[tuple[str, int, tuple[int | None, ...]], ...] = (
-        (_MAX_PHASE, MAX_PHASE_SEC, (None,)),
-        (_TARGET_PHASE, TARGET_PHASE_SEC, (None,)),
-        (_DOWN_PHASE, SWEEP_STEP_SEC, tuple(SWEEP_DUTIES)),
-        (_UP_PHASE, SWEEP_STEP_SEC, tuple(reversed(SWEEP_DUTIES))),
-    )
+    """MAX → TARGET once per FAN_TARGET_CONTROLS law → sweep down SWEEP_DUTIES → sweep back up,
+    one retrace run per segment."""
+    plan: list[tuple[str, int, list[tuple[int | None, str | None]]]] = [
+        (_MAX_PHASE, MAX_PHASE_SEC, [(None, None)]),
+        *((_TARGET_PHASE, TARGET_PHASE_SEC, [(None, control)]) for control in FAN_TARGET_CONTROLS),
+        (_DOWN_PHASE, SWEEP_STEP_SEC, [(duty, None) for duty in SWEEP_DUTIES]),
+        (_UP_PHASE, SWEEP_STEP_SEC, [(duty, None) for duty in reversed(SWEEP_DUTIES)]),
+    ]
     segments: list[_Segment] = []
-    for number, (kind, duration_sec, duties) in enumerate(plan, start=1):
-        for i, duty in enumerate(duties):
-            phase = f"{number}_{kind}" if duty is None else f"{number}_{kind}_{duty}"
-            segments.append(_Segment(len(segments) + 1, kind, phase, duration_sec, duty, i == 0))
+    for number, (kind, duration_sec, settings) in enumerate(plan, start=1):
+        for i, (duty, control) in enumerate(settings):
+            phase = "_".join(str(part) for part in (number, kind, duty, control) if part is not None)
+            segments.append(
+                _Segment(len(segments) + 1, kind, phase, duration_sec, duty, control, i == 0)
+            )
     return segments
 
 
@@ -436,8 +439,8 @@ def _run_segment(
 
 
 def _start_fan_phase(fan: FanController, seg: _Segment) -> None:
-    if seg.kind == _TARGET_PHASE:
-        fan.start_target()
+    if seg.control is not None:
+        fan.start_target(seg.control)
     elif seg.duty is not None:
         fan.hold_duty(seg.duty)
     else:

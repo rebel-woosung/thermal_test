@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-MAX_PHASE_SEC = 600
-TARGET_PHASE_SEC = 600
+MAX_PHASE_SEC = 300
+TARGET_PHASE_SEC = 900
 SWEEP_STEP_SEC = 300
-SWEEP_DUTIES: list[int] = [100, 90, 80, 70, 60, 50, 40, 30]
+SWEEP_DUTIES: list[int] = []
 
 FAN_TARGET_RISE_C = 10
+FAN_TARGET_CONTROLS: list[str] = ["pi", "pi_fast"]
 SWEEP_SAFETY_TEMP_C: float | None = 110
 
 # Rest before each phase, including between workloads.

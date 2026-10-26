@@ -2,10 +2,8 @@
 
   MAX     FAN_MAX_DUTY.
   TARGET  target = each card's max Card Temp over the last FAN_BASELINE_WINDOW_SEC of the
-          MAX phase (``capture_baseline``) + FAN_TARGET_RISE_C. Every
-          FAN_CONTROL_INTERVAL_SEC the duty moves by max(card temp − target) ×
-          FAN_GAIN_PCT_PER_C, capped at ±FAN_MAX_STEP_PCT, unchanged within ±FAN_DEADBAND_C,
-          kept within FAN_MIN_DUTY..FAN_MAX_DUTY.
+          MAX phase (``capture_baseline``) + FAN_TARGET_RISE_C; the duty follows the law
+          named in ``start_target`` (target_control/<name>.py), one per FAN_TARGET_CONTROLS.
   FIXED   the given duty; GUARD (FAN_MAX_DUTY) for the rest of the step once any Card or
           HBM temp reaches SWEEP_SAFETY_TEMP_C.
 HW_CFG and REST run at FAN_MAX_DUTY; CPU zones stay at FAN_MAX_DUTY all session.
@@ -22,14 +20,11 @@ from pathlib import Path
 
 import commands
 from common import BaseWorker, CardTempRegistry, CurrentRowTag, append_row, ensure_header, now_iso
-from constants import (
+from fan_control import target_control
+from fan_control.constants import (
     FAN_BASELINE_WINDOW_SEC,
-    FAN_CONTROL_INTERVAL_SEC,
     FAN_CPU_ZONES,
-    FAN_DEADBAND_C,
-    FAN_GAIN_PCT_PER_C,
     FAN_MAX_DUTY,
-    FAN_MAX_STEP_PCT,
     FAN_MIN_DUTY,
     FAN_NPU_ZONES,
     FAN_POLL_INTERVAL_SEC,
@@ -84,7 +79,7 @@ class FanController(BaseWorker):
         self._fixed_duty = FAN_MAX_DUTY
         self._targets: dict[str, float] = {}
         self._history: deque[tuple[float, dict[str, float]]] = deque()
-        self._next_control = 0.0
+        self._target_control: target_control.TargetControl | None = None
         self._wanted_duty = FAN_MAX_DUTY
         self._applied_duty: int | None = None
         ensure_header(self._csv_path, _FAN_HEADER)
@@ -104,13 +99,15 @@ class FanController(BaseWorker):
         with self._lock:
             self._targets = self._baseline_targets()
 
-    def start_target(self) -> None:
+    def start_target(self, control: str) -> None:
         with self._lock:
             if not self._targets:
                 logger.warning("[FanController] no MAX-phase baseline — TARGET phase stays at max")
+            logger.info("[FanController] TARGET phase — control %s", control)
             self._mode = _TARGET_MODE
             self._wanted_duty = FAN_MAX_DUTY
-            self._next_control = time.monotonic()
+            self._target_control = target_control.create(control)
+            self._target_control.reset(time.monotonic(), self._wanted_duty)
 
     def run(self, stop_event: threading.Event) -> None:
         logger.info(
@@ -156,13 +153,11 @@ class FanController(BaseWorker):
 
     def _step_toward_target(self, now: float, temps: dict[str, float]) -> float | None:
         over = [temps[bus] - target for bus, target in self._targets.items() if bus in temps]
-        if not over:
+        if not over or self._target_control is None:
             return None
-        worst = max(over)
-        if now >= self._next_control:
-            self._next_control = now + FAN_CONTROL_INTERVAL_SEC
-            self._wanted_duty = _next_duty(self._wanted_duty, worst)
-        return worst
+        duty = self._target_control.update(now, temps, self._targets, self._wanted_duty)
+        self._wanted_duty = max(FAN_MIN_DUTY, min(FAN_MAX_DUTY, duty))
+        return max(over)
 
     def _baseline_targets(self) -> dict[str, float]:
         samples: dict[str, list[float]] = {}
@@ -203,14 +198,6 @@ class FanController(BaseWorker):
                 "duty": "" if self._applied_duty is None else self._applied_duty,
             },
         )
-
-
-def _next_duty(duty: int, over_target_c: float) -> int:
-    """Step the duty up while the hottest-rising card is above its target, down while below."""
-    if abs(over_target_c) <= FAN_DEADBAND_C:
-        return duty
-    step = max(-FAN_MAX_STEP_PCT, min(FAN_MAX_STEP_PCT, round(over_target_c * FAN_GAIN_PCT_PER_C)))
-    return max(FAN_MIN_DUTY, min(FAN_MAX_DUTY, duty + step))
 
 
 def _over_safety_temp(temp: float | None) -> bool:
