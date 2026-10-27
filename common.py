@@ -19,6 +19,7 @@ class Device:
     device_id: int
     bus_address: str
     sid: str
+    slot_id: int | None = None
 
     @property
     def path_safe_bus(self) -> str:
@@ -29,12 +30,13 @@ class Device:
 # --- row tag ---------------------------------------------------------------
 @dataclass(frozen=True)
 class RowTag:
-    """Stage Type / workload_code / iteration_index stamped on every monitoring row."""
+    """Stage Type / workload_code / phase / state / iteration_index stamped on every monitoring row."""
 
     stage_type: str
     workload_code: str
     iteration_index: int
     phase: str = ""
+    state: str = ""
 
 
 @dataclass

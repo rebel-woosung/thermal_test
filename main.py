@@ -39,6 +39,7 @@ from test_config import (
     SWEEP_DUTIES,
     SWEEP_SAFETY_TEMP_C,
     SWEEP_STEP_SEC,
+    SWEEP_UP,
     TARGET_PHASE_SEC,
 )
 
@@ -46,6 +47,7 @@ logger = logging.getLogger(__name__)
 
 _NOPASSWD_SUDOERS = "/etc/sudoers.d/99-thermal-test-nopasswd"
 _HWCFG_LABEL = "HW_CFG"
+_RUN_LABEL = "RUN"
 _REST_LABEL = "REST"
 _STAGES: tuple[tuple[str, str], ...] = (
     ("iteration", "Iteration"),
@@ -109,6 +111,9 @@ def _run_session(run_dir: Path) -> None:
         return
     target_control.validate(FAN_TARGET_CONTROLS)
     segments = _segments()
+    if not segments:
+        logger.error("no fan phases enabled in test_config — aborting")
+        return
     steps = [(replace(tag, phase=seg.phase), wl, seg) for tag, wl in runs for seg in segments]
     work_sec = len(runs) * sum(seg.duration_sec for seg in segments)
     rest_count = sum(seg.starts_phase for _, _, seg in steps) - 1
@@ -123,12 +128,13 @@ def _run_session(run_dir: Path) -> None:
         rest_count * REST_SEC / 3600,
     )
     logger.info(
-        "test_config: MAX_PHASE_SEC=%s, TARGET_PHASE_SEC=%s, SWEEP_STEP_SEC=%s, SWEEP_DUTIES=%s,"
+        "test_config: MAX_PHASE_SEC=%s, TARGET_PHASE_SEC=%s, SWEEP_STEP_SEC=%s, SWEEP_DUTIES=%s, SWEEP_UP=%s,"
         " FAN_TARGET_RISE_C=%s, FAN_TARGET_CONTROLS=%s, SWEEP_SAFETY_TEMP_C=%s, REST_SEC=%s",
         MAX_PHASE_SEC,
         TARGET_PHASE_SEC,
         SWEEP_STEP_SEC,
         SWEEP_DUTIES,
+        SWEEP_UP,
         FAN_TARGET_RISE_C,
         FAN_TARGET_CONTROLS,
         SWEEP_SAFETY_TEMP_C,
@@ -141,18 +147,19 @@ def _run_session(run_dir: Path) -> None:
 
     session_stop = threading.Event()
     card_temps = CardTempRegistry()
-    current_tag = CurrentRowTag(replace(steps[0][0], workload_code=_HWCFG_LABEL))
+    current_tag = CurrentRowTag(replace(steps[0][0], state=_HWCFG_LABEL))
     fan = FanController(card_temps, current_tag, run_dir, session_stop)
     server = ServerMetricCollector(current_tag, run_dir, server_id, session_stop)
     npu = NpuMonitor(current_tag, card_temps, run_dir, server_id)
     fan.start()
     server.start()
+    npu.start(devices)
 
     try:
         prev_tag: RowTag | None = None
         for n, (tag, wl, seg) in enumerate(steps, start=1):
             if prev_tag is not None and seg.starts_phase:
-                current_tag.tag = replace(prev_tag, workload_code=_REST_LABEL)
+                current_tag.tag = replace(prev_tag, state=_REST_LABEL)
                 logger.info("resting %d s before %s", REST_SEC, seg.phase)
                 if session_stop.wait(REST_SEC):
                     break
@@ -204,16 +211,17 @@ def _load_runs() -> list[tuple[RowTag, dict]]:
 
 
 def _segments() -> list[_Segment]:
-    """MAX → TARGET once per FAN_TARGET_CONTROLS law → sweep down SWEEP_DUTIES → sweep back up,
-    one retrace run per segment."""
+    """MAX → TARGET once per FAN_TARGET_CONTROLS law → sweep down SWEEP_DUTIES → sweep back up
+    (if SWEEP_UP), one retrace run per segment; a phase with 0 sec or no settings is skipped."""
     plan: list[tuple[str, int, list[tuple[int | None, str | None]]]] = [
         (_MAX_PHASE, MAX_PHASE_SEC, [(None, None)]),
         *((_TARGET_PHASE, TARGET_PHASE_SEC, [(None, control)]) for control in FAN_TARGET_CONTROLS),
         (_DOWN_PHASE, SWEEP_STEP_SEC, [(duty, None) for duty in SWEEP_DUTIES]),
-        (_UP_PHASE, SWEEP_STEP_SEC, [(duty, None) for duty in reversed(SWEEP_DUTIES)]),
+        (_UP_PHASE, SWEEP_STEP_SEC, [(duty, None) for duty in reversed(SWEEP_DUTIES)] if SWEEP_UP else []),
     ]
+    enabled = [(kind, sec, settings) for kind, sec, settings in plan if sec > 0 and settings]
     segments: list[_Segment] = []
-    for number, (kind, duration_sec, settings) in enumerate(plan, start=1):
+    for number, (kind, duration_sec, settings) in enumerate(enabled, start=1):
         for i, (duty, control) in enumerate(settings):
             phase = "_".join(str(part) for part in (number, kind, duty, control) if part is not None)
             segments.append(
@@ -232,10 +240,21 @@ def _discover_devices() -> list[Device]:
         if not device_str.isdigit() or not bus:
             logger.warning("skip malformed rbln-smi entry: %s", dev)
             continue
-        devices.append(Device(device_id=int(device_str), bus_address=bus, sid=sid[-8:]))
+        devices.append(
+            Device(
+                device_id=int(device_str),
+                bus_address=bus,
+                sid=sid[-8:],
+                slot_id=commands.lookup_slot_id(bus),
+            )
+        )
     devices.sort(key=lambda d: d.bus_address)
     for d in devices:
-        logger.info("device rbln%d bus=%s sid=%s", d.device_id, d.bus_address, d.sid)
+        logger.info("device rbln%d bus=%s sid=%s slot=%s", d.device_id, d.bus_address, d.sid, d.slot_id)
+        if d.slot_id is None:
+            logger.warning(
+                "%s: slot lookup failed — OOB SMC temps (Board Temp etc.) left empty", d.bus_address
+            )
     return devices
 
 
@@ -419,14 +438,14 @@ def _run_segment(
     current_tag: CurrentRowTag,
     run_dir: Path,
 ) -> None:
-    npu.stop()
+    current_tag.tag = replace(tag, state=_HWCFG_LABEL)
+    npu.pause()
     fan.hold_max()
-    current_tag.tag = replace(tag, workload_code=_HWCFG_LABEL)
     ready = _apply_hwcfg(devices, wl["hwcfg"])
     if not ready:
         raise HwCfgError(f"no device ready after hw_cfg {wl['hwcfg']}")
-    current_tag.tag = tag
-    npu.start(ready)
+    current_tag.tag = replace(tag, state=_RUN_LABEL)
+    npu.resume(ready)
     _start_fan_phase(fan, seg)
 
     with ThreadPoolExecutor(max_workers=len(ready)) as executor:

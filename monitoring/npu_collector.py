@@ -8,6 +8,8 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -29,15 +31,18 @@ from common import (
     strip_unit,
 )
 from constants import NPU_INTERVAL_SEC
+from monitoring.smc_temp_sweeper import OOB_PWR_COLUMNS, OOB_TEMP_COLUMNS, SmcTempSweeper
 
 logger = logging.getLogger(__name__)
 
 _CHIPLET_COUNT = 4
 _STOP_TIMEOUT_SEC = 30.0
+_PAUSE_TIMEOUT_SEC = 30.0
 
 
 class NpuMonitor:
-    """Per-device NpuMetricCollectors, stopped around hw_cfg so no read hits a device mid-reset."""
+    """Session-long per-device NpuMetricCollectors + SMC OOB sweeper; in-band device reads
+    pause around hw_cfg (rows keep flowing) so no read hits a device mid-reset."""
 
     def __init__(
         self,
@@ -50,30 +55,48 @@ class NpuMonitor:
         self._card_temps = card_temps
         self._out_dir = out_dir
         self._server_id = server_id
+        self._gate = _DeviceReadGate()
         self._collectors: list[NpuMetricCollector] = []
+        self._sweeper: SmcTempSweeper | None = None
 
     def start(self, devices: list[Device]) -> None:
         stop_event = threading.Event()
+        self._sweeper = SmcTempSweeper(devices, stop_event)
         self._collectors = [
             NpuMetricCollector(
                 dev,
                 self._current_tag,
                 self._card_temps,
+                self._sweeper,
+                self._gate,
                 self._out_dir,
                 self._server_id,
                 stop_event,
             )
             for dev in devices
         ]
+        self._sweeper.start()
         for c in self._collectors:
             c.start()
 
+    def pause(self) -> None:
+        if not self._gate.close(timeout=_PAUSE_TIMEOUT_SEC):
+            logger.warning("[NpuMonitor] device reads still in flight after %.0fs", _PAUSE_TIMEOUT_SEC)
+        self._card_temps.clear()
+
+    def resume(self, devices: list[Device]) -> None:
+        self._gate.open({d.bus_address for d in devices})
+
     def stop(self) -> None:
-        for c in self._collectors:
-            c.stop(timeout=_STOP_TIMEOUT_SEC)
-            if c.is_alive():
-                logger.warning("[NpuMonitor] %s still running after %.0fs", c.name, _STOP_TIMEOUT_SEC)
+        workers: list[NpuMetricCollector | SmcTempSweeper] = [*self._collectors]
+        if self._sweeper is not None:
+            workers.append(self._sweeper)
+        for w in workers:
+            w.stop(timeout=_STOP_TIMEOUT_SEC)
+            if w.is_alive():
+                logger.warning("[NpuMonitor] %s still running after %.0fs", w.name, _STOP_TIMEOUT_SEC)
         self._collectors = []
+        self._sweeper = None
         self._card_temps.clear()
 
 
@@ -83,6 +106,8 @@ class NpuMetricCollector(threading.Thread):
         device: Device,
         current_tag: CurrentRowTag,
         card_temps: CardTempRegistry,
+        smc_temps: SmcTempSweeper,
+        gate: _DeviceReadGate,
         out_dir: Path,
         server_id: str,
         stop_event: threading.Event,
@@ -91,6 +116,8 @@ class NpuMetricCollector(threading.Thread):
         self._device = device
         self._current_tag = current_tag
         self._card_temps = card_temps
+        self._smc_temps = smc_temps
+        self._gate = gate
         self._server_id = server_id
         self._stop_event = stop_event
         self._ucie_warned = False
@@ -111,7 +138,7 @@ class NpuMetricCollector(threading.Thread):
         while not self._stop_event.is_set():
             loop_start = time.monotonic()
             try:
-                with quiet_shell():
+                with quiet_shell(), self._gate.enter(self._device.bus_address) as device_reads:
                     tag = self._current_tag.tag
                     row: dict[str, Any] = {
                         "timestamp": now_iso(),
@@ -121,23 +148,27 @@ class NpuMetricCollector(threading.Thread):
                         "stage_type": tag.stage_type,
                         "workload_code": tag.workload_code,
                         "phase": tag.phase,
+                        "state": tag.state,
                         "iteration_index": tag.iteration_index,
                     }
-                    for collect in (
-                        self._collect_smi,
-                        self._collect_thermal,
-                        self._collect_util,
-                        self._collect_ucie,
-                        self._collect_profile,
-                        self._collect_smc_pwr,
-                    ):
-                        if self._stop_event.is_set():
-                            return
-                        row.update(collect())
-                append_row(self._csv_path, _NPU_INTERNAL_KEYS, row)
-                self._card_temps.publish(
-                    self._device.bus_address, row.get("temperature"), _hottest_hbm(row)
-                )
+                    if device_reads:
+                        for collect in (
+                            self._collect_smi,
+                            self._collect_thermal,
+                            self._collect_util,
+                            self._collect_ucie,
+                            self._collect_profile,
+                            self._collect_smc_pwr,
+                        ):
+                            if self._stop_event.is_set():
+                                return
+                            row.update(collect())
+                    row.update(self._collect_smc_temp())
+                    append_row(self._csv_path, _NPU_INTERNAL_KEYS, row)
+                    if device_reads:
+                        self._card_temps.publish(
+                            self._device.bus_address, row.get("temperature"), _hottest_hbm(row)
+                        )
                 error_logged = False
             except Exception as e:
                 if not error_logged:
@@ -201,6 +232,41 @@ class NpuMetricCollector(threading.Thread):
     def _collect_smc_pwr(self) -> dict[str, Any]:
         out = commands.read_smc_pwr(self._device.device_id)
         return {k: parse_smc(out, k) for k, _ in _SMC_PWR_COLUMNS}
+
+    def _collect_smc_temp(self) -> dict[str, Any]:
+        return self._smc_temps.snapshot_for(self._device.bus_address)
+
+
+class _DeviceReadGate:
+    """Lets in-band device reads through only for open buses; ``close`` waits out reads in flight."""
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._open: set[str] = set()
+        self._active = 0
+
+    def open(self, buses: set[str]) -> None:
+        with self._cond:
+            self._open = set(buses)
+
+    def close(self, timeout: float) -> bool:
+        with self._cond:
+            self._open = set()
+            return self._cond.wait_for(lambda: self._active == 0, timeout)
+
+    @contextmanager
+    def enter(self, bus: str) -> Iterator[bool]:
+        with self._cond:
+            allowed = bus in self._open
+            if allowed:
+                self._active += 1
+        try:
+            yield allowed
+        finally:
+            if allowed:
+                with self._cond:
+                    self._active -= 1
+                    self._cond.notify_all()
 
 
 def _hottest_hbm(row: dict[str, Any]) -> float | None:
@@ -288,7 +354,7 @@ _SMC_PWR_COLUMNS: tuple[tuple[str, str], ...] = (
     ("ldo_3p3v_current", "LDO 3.3v current"),
 )
 
-_NPU_COLUMNS = _CP_COLUMNS + _SMC_PWR_COLUMNS
+_NPU_COLUMNS = _CP_COLUMNS + _SMC_PWR_COLUMNS + OOB_TEMP_COLUMNS + OOB_PWR_COLUMNS
 
 NPU_HEADER: tuple[str, ...] = (
     "Serial Number",
@@ -298,6 +364,7 @@ NPU_HEADER: tuple[str, ...] = (
     "Stage Type",
     "workload_code",
     "phase",
+    "state",
     *(h for _, h in _NPU_COLUMNS),
     "iteration_index",
 )
@@ -309,6 +376,7 @@ _NPU_INTERNAL_KEYS: tuple[str, ...] = (
     "stage_type",
     "workload_code",
     "phase",
+    "state",
     *(k for k, _ in _NPU_COLUMNS),
     "iteration_index",
 )

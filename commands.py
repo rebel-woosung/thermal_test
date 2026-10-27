@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 RBLN_SMI_CMD = "rbln-smi"
 RBLN_TRACE_CMD = "rblntrace"
+RBLN_SMCIF_CMD = "rbln-smcif"
 IPMITOOL_CMD = "ipmitool"
 
 _RETRACE_TIMEOUT_MARGIN_SEC = 120
@@ -106,6 +107,20 @@ def get_device_snapshot(device_id: int) -> dict[str, Any]:
         return {}
 
 
+def lookup_slot_id(bus_address: str) -> int | None:
+    """Physical chassis slot for a BDF via dmidecode (rbln-smcif addresses cards by slot)."""
+    cmd = f"dmidecode -t slot | grep {bus_address} -B4 | grep ID: | awk '{{print $2}}'"
+    try:
+        out = run_sudo_command(cmd, timeout=_SHORT_CMD_TIMEOUT_SEC)
+    except Exception as e:
+        logger.warning("%s failed: %s", cmd, e)
+        return None
+    for token in out.split():
+        if token.isdigit():
+            return int(token)
+    return None
+
+
 # --- metric reads (best-effort, warn once) ---------------------------------
 def read_thermal(device_id: int, chiplet_id: int | None = None) -> str:
     cmd = f"rbln sysinfo -t thermal -d {device_id}"
@@ -128,6 +143,14 @@ def read_ucie(device_id: int, chiplet_id: int) -> str:
 
 def read_smc_pwr(device_id: int) -> str:
     return _read_warn_once(f"rbln sysinfo -t smc_pwr -d {device_id}")
+
+
+def read_smc_power_mon(slot_id: int) -> str:
+    return _read_warn_once(f"{RBLN_SMCIF_CMD} power_mon -s {slot_id} -j")
+
+
+def read_smc_sensor_mon(slot_id: int) -> str:
+    return _read_warn_once(f"{RBLN_SMCIF_CMD} sensor_mon -s {slot_id} -j")
 
 
 def read_sensor_records() -> str:
