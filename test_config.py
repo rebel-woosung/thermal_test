@@ -18,12 +18,10 @@ SWEEP_UP = False
 
 FAN_TARGET_RISE_C = 10
 FAN_TARGET_CONTROLS: list[str] = [
-    "pred_lin_k1",
-    "pred_lin_k1_5",
-    "pred_lin_k2",
-    "pred_exp_k1",
-    "pred_exp_k1_5",
-    "pred_exp_k2",
+    "pred_lin_h10_k0_5",
+    "pred_lin_h10_k1",
+    "pred_exp_h10_k0_5",
+    "pred_exp_h10_k1",
 ]
 SWEEP_SAFETY_TEMP_C: float | None = 110
 
