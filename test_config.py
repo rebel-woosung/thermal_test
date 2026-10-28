@@ -2,13 +2,7 @@
 
 from __future__ import annotations
 
-WORKLOAD_CODES: list[str] = [
-    "RE0SR0005",
-    "RE0SR0006",
-    "RE0MR0003",
-    "RE0MR0012",
-    "RE0SR0003",
-]
+WORKLOAD_CODES: list[str] = []
 
 MAX_PHASE_SEC = 180
 TARGET_PHASE_SEC = 480
@@ -17,12 +11,7 @@ SWEEP_DUTIES: list[int] = []
 SWEEP_UP = False
 
 FAN_TARGET_RISE_C = 10
-FAN_TARGET_CONTROLS: list[str] = [
-    "pred_lin_h10_k0_5",
-    "pred_lin_h10_k1",
-    "pred_exp_h10_k0_5",
-    "pred_exp_h10_k1",
-]
+FAN_TARGET_CONTROLS: list[str] = ["pred_lin_to_exp"]
 SWEEP_SAFETY_TEMP_C: float | None = 110
 
 # Rest before each phase, including between workloads.

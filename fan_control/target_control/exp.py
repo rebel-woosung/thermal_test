@@ -34,7 +34,7 @@ class ExpControl(TargetControl):
     DEADBAND_C = 0.5
     BOOST_MAX_C = 15.0
     AMBIENT_C = 25.0
-    SENSOR_VAR_C2 = 0.45
+    SENSOR_VAR_C2 = 0.2
     DRIFT_VAR_C2_PER_SEC = 0.005
     MODEL_ERROR = 0.1
     INITIAL_VAR_C2 = 100.0
