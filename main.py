@@ -41,6 +41,7 @@ from test_config import (
     SWEEP_STEP_SEC,
     SWEEP_UP,
     TARGET_PHASE_SEC,
+    WORKLOAD_CODES,
 )
 
 logger = logging.getLogger(__name__)
@@ -128,8 +129,9 @@ def _run_session(run_dir: Path) -> None:
         rest_count * REST_SEC / 3600,
     )
     logger.info(
-        "test_config: MAX_PHASE_SEC=%s, TARGET_PHASE_SEC=%s, SWEEP_STEP_SEC=%s, SWEEP_DUTIES=%s, SWEEP_UP=%s,"
-        " FAN_TARGET_RISE_C=%s, FAN_TARGET_CONTROLS=%s, SWEEP_SAFETY_TEMP_C=%s, REST_SEC=%s",
+        "test_config: WORKLOAD_CODES=%s, MAX_PHASE_SEC=%s, TARGET_PHASE_SEC=%s, SWEEP_STEP_SEC=%s, SWEEP_DUTIES=%s,"
+        " SWEEP_UP=%s, FAN_TARGET_RISE_C=%s, FAN_TARGET_CONTROLS=%s, SWEEP_SAFETY_TEMP_C=%s, REST_SEC=%s",
+        WORKLOAD_CODES,
         MAX_PHASE_SEC,
         TARGET_PHASE_SEC,
         SWEEP_STEP_SEC,
@@ -194,7 +196,8 @@ def _run_session(run_dir: Path) -> None:
 
 # --- module-private helpers ------------------------------------------------
 def _load_runs() -> list[tuple[RowTag, dict]]:
-    """Every workload run in engine stage order; the iteration stage repeats ``repeat_count`` times."""
+    """Every workload run in engine stage order, only WORKLOAD_CODES when set; the iteration stage
+    repeats ``repeat_count`` times."""
     with open(WORKLOADS_JSON, encoding="utf-8") as f:
         config = json.load(f)
     unknown = set(config) - {key for key, _ in _STAGES}
@@ -207,6 +210,11 @@ def _load_runs() -> list[tuple[RowTag, dict]]:
             continue
         for i in range(1, stage.get("repeat_count", 1) + 1):
             runs.extend((RowTag(stage_type, wl["code"], i), wl) for wl in stage["workloads"])
+    if WORKLOAD_CODES:
+        missing = sorted(set(WORKLOAD_CODES) - {tag.workload_code for tag, _ in runs})
+        if missing:
+            logger.warning("%s: WORKLOAD_CODES %s not found — skipped", WORKLOADS_JSON.name, missing)
+        runs = [(tag, wl) for tag, wl in runs if tag.workload_code in WORKLOAD_CODES]
     return runs
 
 

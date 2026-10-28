@@ -1,7 +1,7 @@
 """Fan controller — NPU fan zone duty per workload phase, switched by main.py:
 
   MAX     FAN_MAX_DUTY.
-  TARGET  target = each card's max Card Temp over the last FAN_BASELINE_WINDOW_SEC of the
+  TARGET  target = each card's trimmed-mean Card Temp over the last FAN_BASELINE_WINDOW_SEC of the
           MAX phase (``capture_baseline``) + FAN_TARGET_RISE_C; the duty follows the law
           named in ``start_target`` (target_control/<name>.py), one per FAN_TARGET_CONTROLS.
   FIXED   the given duty; GUARD (FAN_MAX_DUTY) for the rest of the step once any Card or
@@ -166,7 +166,7 @@ class FanController(BaseWorker):
         for _, temps in self._history:
             for bus, temp in temps.items():
                 samples.setdefault(bus, []).append(temp)
-        targets = {bus: max(v) + FAN_TARGET_RISE_C for bus, v in samples.items()}
+        targets = {bus: _trimmed_mean(v) + FAN_TARGET_RISE_C for bus, v in samples.items()}
         logger.info(
             "[FanController] TARGET phase — Card Temp target (baseline + %d°C) by bus: %s",
             FAN_TARGET_RISE_C,
@@ -201,6 +201,12 @@ class FanController(BaseWorker):
                 "duty": "" if self._applied_duty is None else self._applied_duty,
             },
         )
+
+
+def _trimmed_mean(values: list[float]) -> float:
+    """Mean without the single highest and lowest value; the plain mean of two or fewer."""
+    kept = sorted(values)[1:-1] if len(values) > 2 else values
+    return sum(kept) / len(kept)
 
 
 def _over_safety_temp(temp: float | None) -> bool:
