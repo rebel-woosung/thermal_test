@@ -90,6 +90,7 @@ class FanController(BaseWorker):
         self._target_control: target_control.TargetControl | None = None
         self._wanted_duty = FAN_MAX_DUTY
         self._applied_duty: int | None = None
+        self._cpu_zones_at_max = False
         ensure_header(self._csv_path, _FAN_HEADER)
 
     def hold_max(self) -> None:
@@ -186,7 +187,9 @@ class FanController(BaseWorker):
 
     def _apply(self, duty: int) -> None:
         try:
-            commands.set_fan_duty_all(FAN_MAX_DUTY, FAN_CPU_ZONES)
+            if not self._cpu_zones_at_max:
+                commands.set_fan_duty_all(FAN_MAX_DUTY, FAN_CPU_ZONES)
+                self._cpu_zones_at_max = True
             commands.set_fan_duty_all(duty, FAN_NPU_ZONES)
             logger.info("[FanController] fan duty -> %d%%", duty)
             self._applied_duty = duty

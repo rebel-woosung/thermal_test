@@ -12,7 +12,7 @@ from pathlib import Path
 WORKLOAD_DIR = Path("/data/rbcn/rb-srt-main-engine/workload")
 
 # Main-engine workload config: stages run in engine order, iteration × repeat_count.
-WORKLOADS_JSON = Path(__file__).resolve().parent / "workloads" / "CR13.json"
+WORKLOADS_JSON = Path(__file__).resolve().parent / "workloads" / "CR03.json"
 
 # --------------------------------------------------------------------------
 # Monitoring
