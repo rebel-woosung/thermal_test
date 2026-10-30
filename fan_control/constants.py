@@ -8,8 +8,7 @@ FAN_CPU_ZONES: list[int] = [0x02, 0x03]
 FAN_ZONES: list[int] = FAN_NPU_ZONES + FAN_CPU_ZONES
 
 FAN_MAX_DUTY = 100
-FAN_MIN_DUTY = 20
-FAN_BASELINE_WINDOW_SEC = 30
+FAN_MIN_DUTY = 30
 
 # On exit, drop all fans to this duty as a safe fallback. Set None to leave as-is.
 RESTORE_FAN_DUTY_ON_EXIT: int | None = 20

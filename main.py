@@ -1,6 +1,7 @@
-"""Card thermal test — run each workloads/CR03.json workload through its fan phases
-(MAX → TARGET once per FAN_TARGET_CONTROLS law → duty sweep down → duty sweep up, see
-test_config.py), with a hard reset before every segment, collecting NPU/server/SMC metrics.
+"""Card thermal test — run every WORKLOADS_JSON workload in engine stage order for its
+test_time_sec under its fan_target (a fixed duty, or a Card / HBM temp held by FAN_TARGET_CONTROL),
+each after hw_cfg + hard reset and, outside the iteration stage, COOL_DOWN_SEC at max fan,
+collecting NPU/server/SMC metrics.
 
 Run (foreground):  cd thermal_test && uv run python main.py
 """
@@ -27,20 +28,16 @@ from commands import CommandFailedError
 from common import CardTempRegistry, CurrentRowTag, Device, RowTag
 from constants import LOG_DIR, WORKLOAD_DIR, WORKLOADS_JSON
 from fan_control import target_control
-from fan_control.constants import FAN_ZONES, RESTORE_FAN_DUTY_ON_EXIT
-from fan_control.controller import FanController
+from fan_control.constants import FAN_MAX_DUTY, FAN_ZONES, RESTORE_FAN_DUTY_ON_EXIT
+from fan_control.controller import CARD, HBM, FanController
 from monitoring.npu_collector import NpuMonitor
 from monitoring.server_collector import ServerMetricCollector
 from test_config import (
-    FAN_TARGET_CONTROLS,
-    FAN_TARGET_RISE_C,
-    MAX_PHASE_SEC,
-    REST_SEC,
-    SWEEP_DUTIES,
-    SWEEP_SAFETY_TEMP_C,
-    SWEEP_STEP_SEC,
-    SWEEP_UP,
-    TARGET_PHASE_SEC,
+    COOL_DOWN_SEC,
+    FAN_TARGET_CONTROL,
+    SAFETY_CARD_TEMP_C,
+    SAFETY_HBM_TEMP_C,
+    SAFETY_RELEASE_C,
     WORKLOAD_CODES,
 )
 
@@ -48,8 +45,8 @@ logger = logging.getLogger(__name__)
 
 _NOPASSWD_SUDOERS = "/etc/sudoers.d/99-thermal-test-nopasswd"
 _HWCFG_LABEL = "HW_CFG"
+_COOL_DOWN_LABEL = "COOL_DOWN"
 _RUN_LABEL = "RUN"
-_REST_LABEL = "REST"
 _STAGES: tuple[tuple[str, str], ...] = (
     ("iteration", "Iteration"),
     ("prestress", "Pre-stress"),
@@ -57,6 +54,8 @@ _STAGES: tuple[tuple[str, str], ...] = (
     ("baseline_stress", "Baseline"),
     ("poststress", "Post-stress"),
 )
+_NO_COOL_DOWN_STAGES = {"Iteration"}
+_FAN_TARGET_KEYS = {"duty": None, "card_temp_c": CARD, "hbm_temp_c": HBM}
 
 _HWCFG_VERIFY_ATTEMPTS = 3
 _POST_RESET_DELAY_SEC = 5
@@ -68,27 +67,23 @@ _FW_INIT_TIMEOUT_SEC = 30
 _FW_INIT_POLL_SEC = 5
 
 
-_MAX_PHASE = "MAX"
-_TARGET_PHASE = "TARGET"
-_DOWN_PHASE = "DOWN"
-_UP_PHASE = "UP"
-
-
 class HwCfgError(Exception):
     """hw_cfg verify failed after a workload's write + hard reset — abort the run."""
 
 
 @dataclass(frozen=True)
-class _Segment:
-    """One retrace run of a workload; a ``starts_phase`` segment is preceded by REST."""
+class _FanTarget:
+    """A workload's fan_target: a fixed ``duty``, or the group ``sensor`` temp held at ``temp_c``."""
 
-    index: int
-    kind: str
-    phase: str
-    duration_sec: int
     duty: int | None
-    control: str | None
-    starts_phase: bool
+    sensor: str | None
+    temp_c: float | None
+
+    @property
+    def phase(self) -> str:
+        if self.sensor is not None:
+            return f"{self.sensor.upper()}_{self.temp_c:g}C"
+        return "MAX" if self.duty >= FAN_MAX_DUTY else f"DUTY_{self.duty}"
 
 
 def main() -> None:
@@ -110,37 +105,25 @@ def _run_session(run_dir: Path) -> None:
     if not runs:
         logger.error("no workloads in %s — aborting", WORKLOADS_JSON)
         return
-    target_control.validate(FAN_TARGET_CONTROLS)
-    segments = _segments()
-    if not segments:
-        logger.error("no fan phases enabled in test_config — aborting")
-        return
-    steps = [(replace(tag, phase=seg.phase), wl, seg) for tag, wl in runs for seg in segments]
-    work_sec = len(runs) * sum(seg.duration_sec for seg in segments)
-    rest_count = sum(seg.starts_phase for _, _, seg in steps) - 1
+    target_control.validate([FAN_TARGET_CONTROL])
+    work_sec = sum(wl["test_time_sec"] for _, wl, _ in runs)
+    cool_downs = sum(_cools_down(tag) for tag, _, _ in runs)
     logger.info(
-        "%d workloads × %d segments = %d runs from %s — %.1f h workload + %.1f h rest"
-        " + a hard reset per run",
+        "%d runs from %s — %.1f h workload + %.1f h cool-down + a hard reset per run",
         len(runs),
-        len(segments),
-        len(steps),
         WORKLOADS_JSON.name,
         work_sec / 3600,
-        rest_count * REST_SEC / 3600,
+        cool_downs * COOL_DOWN_SEC / 3600,
     )
     logger.info(
-        "test_config: WORKLOAD_CODES=%s, MAX_PHASE_SEC=%s, TARGET_PHASE_SEC=%s, SWEEP_STEP_SEC=%s, SWEEP_DUTIES=%s,"
-        " SWEEP_UP=%s, FAN_TARGET_RISE_C=%s, FAN_TARGET_CONTROLS=%s, SWEEP_SAFETY_TEMP_C=%s, REST_SEC=%s",
+        "test_config: WORKLOAD_CODES=%s, FAN_TARGET_CONTROL=%s, COOL_DOWN_SEC=%s,"
+        " SAFETY_CARD_TEMP_C=%s, SAFETY_HBM_TEMP_C=%s, SAFETY_RELEASE_C=%s",
         WORKLOAD_CODES,
-        MAX_PHASE_SEC,
-        TARGET_PHASE_SEC,
-        SWEEP_STEP_SEC,
-        SWEEP_DUTIES,
-        SWEEP_UP,
-        FAN_TARGET_RISE_C,
-        FAN_TARGET_CONTROLS,
-        SWEEP_SAFETY_TEMP_C,
-        REST_SEC,
+        FAN_TARGET_CONTROL,
+        COOL_DOWN_SEC,
+        SAFETY_CARD_TEMP_C,
+        SAFETY_HBM_TEMP_C,
+        SAFETY_RELEASE_C,
     )
     devices = _discover_devices()
     if not devices:
@@ -149,7 +132,7 @@ def _run_session(run_dir: Path) -> None:
 
     session_stop = threading.Event()
     card_temps = CardTempRegistry()
-    current_tag = CurrentRowTag(replace(steps[0][0], state=_HWCFG_LABEL))
+    current_tag = CurrentRowTag(replace(runs[0][0], state=_HWCFG_LABEL))
     fan = FanController(card_temps, current_tag, run_dir, session_stop)
     server = ServerMetricCollector(current_tag, run_dir, server_id, session_stop)
     npu = NpuMonitor(current_tag, card_temps, run_dir, server_id)
@@ -158,26 +141,21 @@ def _run_session(run_dir: Path) -> None:
     npu.start(devices)
 
     try:
-        prev_tag: RowTag | None = None
-        for n, (tag, wl, seg) in enumerate(steps, start=1):
-            if prev_tag is not None and seg.starts_phase:
-                current_tag.tag = replace(prev_tag, state=_REST_LABEL)
-                logger.info("resting %d s before %s", REST_SEC, seg.phase)
-                if session_stop.wait(REST_SEC):
-                    break
+        for n, (tag, wl, fan_target) in enumerate(runs, start=1):
             logger.info(
-                "=== [%d/%d] %s #%d — workload %s (%s) — %s — %d s ===",
+                "=== [%d/%d] %s #%d — test unit %d — workload %s (%s) — %s — %d s ===",
                 n,
-                len(steps),
+                len(runs),
                 tag.stage_type,
                 tag.iteration_index,
+                wl["test_unit_id"],
                 tag.workload_code,
                 wl["workload_type"],
-                seg.phase,
-                seg.duration_sec,
+                tag.phase,
+                wl["test_time_sec"],
             )
-            _run_segment(tag, wl, seg, devices, npu, fan, current_tag, run_dir)
-            prev_tag = tag
+            if not _run_workload(tag, wl, fan_target, devices, npu, fan, current_tag, run_dir, session_stop):
+                break
     except KeyboardInterrupt:
         logger.warning("interrupted — shutting down")
     finally:
@@ -195,47 +173,47 @@ def _run_session(run_dir: Path) -> None:
 
 
 # --- module-private helpers ------------------------------------------------
-def _load_runs() -> list[tuple[RowTag, dict]]:
+def _load_runs() -> list[tuple[RowTag, dict, _FanTarget]]:
     """Every workload run in engine stage order, only WORKLOAD_CODES when set; the iteration stage
-    repeats ``repeat_count`` times."""
+    repeats ``repeat_count`` times. A missing or malformed fan_target stops the session here."""
     with open(WORKLOADS_JSON, encoding="utf-8") as f:
         config = json.load(f)
     unknown = set(config) - {key for key, _ in _STAGES}
     if unknown:
         logger.warning("%s: ignoring unknown stage(s) %s", WORKLOADS_JSON.name, sorted(unknown))
-    runs: list[tuple[RowTag, dict]] = []
+    runs: list[tuple[RowTag, dict, _FanTarget]] = []
     for key, stage_type in _STAGES:
         stage = config.get(key)
         if stage is None:
             continue
         for i in range(1, stage.get("repeat_count", 1) + 1):
-            runs.extend((RowTag(stage_type, wl["code"], i), wl) for wl in stage["workloads"])
+            for wl in stage["workloads"]:
+                fan_target = _fan_target(wl)
+                runs.append((RowTag(stage_type, wl["code"], i, phase=fan_target.phase), wl, fan_target))
     if WORKLOAD_CODES:
-        missing = sorted(set(WORKLOAD_CODES) - {tag.workload_code for tag, _ in runs})
+        missing = sorted(set(WORKLOAD_CODES) - {tag.workload_code for tag, _, _ in runs})
         if missing:
             logger.warning("%s: WORKLOAD_CODES %s not found — skipped", WORKLOADS_JSON.name, missing)
-        runs = [(tag, wl) for tag, wl in runs if tag.workload_code in WORKLOAD_CODES]
+        runs = [run for run in runs if run[0].workload_code in WORKLOAD_CODES]
     return runs
 
 
-def _segments() -> list[_Segment]:
-    """MAX → TARGET once per FAN_TARGET_CONTROLS law → sweep down SWEEP_DUTIES → sweep back up
-    (if SWEEP_UP), one retrace run per segment; a phase with 0 sec or no settings is skipped."""
-    plan: list[tuple[str, int, list[tuple[int | None, str | None]]]] = [
-        (_MAX_PHASE, MAX_PHASE_SEC, [(None, None)]),
-        *((_TARGET_PHASE, TARGET_PHASE_SEC, [(None, control)]) for control in FAN_TARGET_CONTROLS),
-        (_DOWN_PHASE, SWEEP_STEP_SEC, [(duty, None) for duty in SWEEP_DUTIES]),
-        (_UP_PHASE, SWEEP_STEP_SEC, [(duty, None) for duty in reversed(SWEEP_DUTIES)] if SWEEP_UP else []),
-    ]
-    enabled = [(kind, sec, settings) for kind, sec, settings in plan if sec > 0 and settings]
-    segments: list[_Segment] = []
-    for number, (kind, duration_sec, settings) in enumerate(enabled, start=1):
-        for i, (duty, control) in enumerate(settings):
-            phase = "_".join(str(part) for part in (number, kind, duty, control) if part is not None)
-            segments.append(
-                _Segment(len(segments) + 1, kind, phase, duration_sec, duty, control, i == 0)
-            )
-    return segments
+def _fan_target(wl: dict) -> _FanTarget:
+    spec = wl.get("fan_target") or {}
+    if len(spec) != 1 or next(iter(spec)) not in _FAN_TARGET_KEYS:
+        raise ValueError(
+            f"{WORKLOADS_JSON.name} test unit {wl['test_unit_id']} ({wl['code']}): fan_target needs exactly one"
+            f" of {sorted(_FAN_TARGET_KEYS)}, got {spec}"
+        )
+    key, value = next(iter(spec.items()))
+    sensor = _FAN_TARGET_KEYS[key]
+    if sensor is None:
+        return _FanTarget(int(value), None, None)
+    return _FanTarget(None, sensor, float(value))
+
+
+def _cools_down(tag: RowTag) -> bool:
+    return tag.stage_type not in _NO_COOL_DOWN_STAGES
 
 
 def _discover_devices() -> list[Device]:
@@ -436,64 +414,71 @@ def _num(value: object) -> float:
     return int(m.group()) if m else 0
 
 
-def _run_segment(
+def _run_workload(
     tag: RowTag,
     wl: dict,
-    seg: _Segment,
+    fan_target: _FanTarget,
     devices: list[Device],
     npu: NpuMonitor,
     fan: FanController,
     current_tag: CurrentRowTag,
     run_dir: Path,
-) -> None:
+    stop_event: threading.Event,
+) -> bool:
+    """hw_cfg + hard reset → COOL_DOWN_SEC at max fan (skipped in the iteration stage) → retrace for
+    test_time_sec under ``fan_target``; False once the session is stopped during the cool-down."""
     current_tag.tag = replace(tag, state=_HWCFG_LABEL)
     npu.pause()
     fan.hold_max()
     ready = _apply_hwcfg(devices, wl["hwcfg"])
     if not ready:
         raise HwCfgError(f"no device ready after hw_cfg {wl['hwcfg']}")
-    current_tag.tag = replace(tag, state=_RUN_LABEL)
     npu.resume(ready)
-    _start_fan_phase(fan, seg)
+    if _cools_down(tag):
+        current_tag.tag = replace(tag, state=_COOL_DOWN_LABEL)
+        logger.info("cooling down %d s at max fan", COOL_DOWN_SEC)
+        if stop_event.wait(COOL_DOWN_SEC):
+            return False
+    current_tag.tag = replace(tag, state=_RUN_LABEL)
+    _start_fan(fan, fan_target)
 
     with ThreadPoolExecutor(max_workers=len(ready)) as executor:
-        futures = [executor.submit(_retrace_device, dev, tag, wl, seg, run_dir) for dev in ready]
+        futures = [executor.submit(_retrace_device, dev, tag, wl, run_dir) for dev in ready]
         for future in as_completed(futures):
             future.result()
-    if seg.kind == _MAX_PHASE:
-        fan.capture_baseline()
     fan.hold_max()
+    return True
 
 
-def _start_fan_phase(fan: FanController, seg: _Segment) -> None:
-    if seg.control is not None:
-        fan.start_target(seg.control)
-    elif seg.duty is not None:
-        fan.hold_duty(seg.duty)
-    else:
+def _start_fan(fan: FanController, fan_target: _FanTarget) -> None:
+    if fan_target.sensor is not None:
+        fan.start_target(FAN_TARGET_CONTROL, fan_target.sensor, fan_target.temp_c)
+    elif fan_target.duty >= FAN_MAX_DUTY:
         fan.hold_max()
+    else:
+        fan.hold_duty(fan_target.duty)
 
 
-def _retrace_device(device: Device, tag: RowTag, wl: dict, seg: _Segment, run_dir: Path) -> None:
+def _retrace_device(device: Device, tag: RowTag, wl: dict, run_dir: Path) -> None:
     paths = [str(WORKLOAD_DIR / f) for f in wl["filename"]]
-    label = f"{wl['code']} {seg.phase}"
+    label = f"{wl['code']} {tag.phase}"
     log_dir = run_dir / f"test_unit_{wl['test_unit_id']}" / f"dev_{device.path_safe_bus}"
     log_dir.mkdir(parents=True, exist_ok=True)
     stdout_logs = [
-        log_dir / f"{tag.iteration_index:02d}_{wl['code']}_{seg.index:02d}_{seg.phase}_{Path(f).stem}.log"
+        log_dir / f"{tag.iteration_index:02d}_{wl['code']}_{tag.phase}_{Path(f).stem}.log"
         for f in wl["filename"]
     ]
 
     if wl["workload_type"] == "DTC_SINGLE":
         with ThreadPoolExecutor(max_workers=len(paths)) as pool:
             futures = [
-                pool.submit(_retrace_one, device, p, log, run_dir, label, seg.duration_sec, idx)
+                pool.submit(_retrace_one, device, p, log, run_dir, label, wl["test_time_sec"], idx)
                 for idx, (p, log) in enumerate(zip(paths, stdout_logs))
             ]
             for future in as_completed(futures):
                 future.result()
     else:
-        _retrace_one(device, paths[0], stdout_logs[0], run_dir, label, seg.duration_sec, None)
+        _retrace_one(device, paths[0], stdout_logs[0], run_dir, label, wl["test_time_sec"], None)
 
 
 def _retrace_one(

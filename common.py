@@ -71,11 +71,10 @@ class CardTempRegistry:
         with self._lock:
             return {bus: t for bus, t in self._temps.items() if isinstance(t, (int, float))}
 
-    def hottest(self) -> float | None:
-        """Highest Card or HBM temp across all cards."""
+    def hbm_snapshot(self) -> dict[str, float]:
+        """Hottest of the 4 chiplet HBM temps per bus address."""
         with self._lock:
-            temps = [*self._temps.values(), *self._hbm_temps.values()]
-        return max((t for t in temps if isinstance(t, (int, float))), default=None)
+            return {bus: t for bus, t in self._hbm_temps.items() if isinstance(t, (int, float))}
 
 
 # --- background worker -----------------------------------------------------

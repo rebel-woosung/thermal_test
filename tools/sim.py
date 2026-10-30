@@ -13,8 +13,9 @@ from itertools import pairwise
 
 from fan_control.constants import FAN_MAX_DUTY, FAN_MIN_DUTY
 from fan_control.target_control import TargetControl, create
-from test_config import FAN_TARGET_RISE_C, TARGET_PHASE_SEC
 
+FAN_TARGET_RISE_C = 10
+TARGET_PHASE_SEC = 480
 AMBIENT_C = 25.0
 IDLE_C = 40.0
 FAST_FRACTION = 0.55

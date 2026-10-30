@@ -1,4 +1,4 @@
-"""TARGET laws, one per file: a FAN_TARGET_CONTROLS name runs the TargetControl subclass in <name>.py."""
+"""TARGET laws, one per file: the FAN_TARGET_CONTROL name runs the TargetControl subclass in <name>.py."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def available() -> list[str]:
 
 def create(name: str) -> TargetControl:
     if name not in available():
-        raise ValueError(f"FAN_TARGET_CONTROLS entry {name!r} is not one of {available()}")
+        raise ValueError(f"FAN_TARGET_CONTROL {name!r} is not one of {available()}")
     importlib.import_module(f"{__name__}.{name}")
     return _CONTROLS[name]()
 
