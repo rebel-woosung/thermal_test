@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 WORKLOAD_CODES: list[str] = []
-TEST_UNIT_IDS: list[int] = [22, 26, 61, 62]
+TEST_UNIT_IDS: list[int] = [23, 26, 61, 62, 81, 82]
 TEST_TIME_SEC: int | None = 600
 
 FAN_TARGET_CONTROLS: list[str] = ["pred_exp_tau3_k2"]
