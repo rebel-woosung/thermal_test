@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -55,26 +56,39 @@ class CardTempRegistry:
     def __init__(self) -> None:
         self._temps: dict[str, float | None] = {}
         self._hbm_temps: dict[str, float | None] = {}
+        self._published_at: dict[str, float] = {}
         self._lock = threading.Lock()
 
     def publish(self, bus_address: str, temp: float | None, hbm_temp: float | None) -> None:
         with self._lock:
             self._temps[bus_address] = temp
             self._hbm_temps[bus_address] = hbm_temp
+            self._published_at[bus_address] = time.monotonic()
 
     def clear(self) -> None:
         with self._lock:
             self._temps.clear()
             self._hbm_temps.clear()
+            self._published_at.clear()
 
-    def snapshot(self) -> dict[str, float]:
+    def snapshot(self, max_age_sec: float) -> dict[str, float]:
+        """Positive Card Temp per bus address published within the last ``max_age_sec``."""
         with self._lock:
-            return {bus: t for bus, t in self._temps.items() if isinstance(t, (int, float))}
+            return self._fresh(self._temps, max_age_sec)
 
-    def hbm_snapshot(self) -> dict[str, float]:
-        """Hottest of the 4 chiplet HBM temps per bus address."""
+    def hbm_snapshot(self, max_age_sec: float) -> dict[str, float]:
+        """Hottest of the 4 chiplet HBM temps per bus address, positive and published within the
+        last ``max_age_sec``."""
         with self._lock:
-            return {bus: t for bus, t in self._hbm_temps.items() if isinstance(t, (int, float))}
+            return self._fresh(self._hbm_temps, max_age_sec)
+
+    def _fresh(self, temps: dict[str, float | None], max_age_sec: float) -> dict[str, float]:
+        now = time.monotonic()
+        return {
+            bus: t
+            for bus, t in temps.items()
+            if isinstance(t, (int, float)) and t > 0 and now - self._published_at[bus] <= max_age_sec
+        }
 
 
 # --- background worker -----------------------------------------------------

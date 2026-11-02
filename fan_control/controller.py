@@ -9,7 +9,8 @@
           reaches SAFETY_HBM_TEMP_C in a TARGET or FIXED run; that run resumes once every card is
           SAFETY_RELEASE_C below both limits (a TARGET law keeps tracking at max fan meanwhile).
 HW_CFG and COOL_DOWN run at FAN_MAX_DUTY; CPU zones stay at FAN_MAX_DUTY all session.
-Card/HBM temps come from the NPU collectors (no separate poll).
+Card/HBM temps come from the NPU collectors (no separate poll); a card whose temp is not positive
+or not refreshed within FAN_TEMP_STALE_SEC is left out.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from fan_control.constants import (
     FAN_MIN_DUTY,
     FAN_NPU_ZONES,
     FAN_POLL_INTERVAL_SEC,
+    FAN_TEMP_STALE_SEC,
 )
 from test_config import SAFETY_CARD_TEMP_C, SAFETY_HBM_TEMP_C, SAFETY_RELEASE_C
 
@@ -132,7 +134,10 @@ class FanController(BaseWorker):
         )
         while not stop_event.is_set():
             now = time.monotonic()
-            temps = {CARD: self._card_temps.snapshot(), HBM: self._card_temps.hbm_snapshot()}
+            temps = {
+                CARD: self._card_temps.snapshot(FAN_TEMP_STALE_SEC),
+                HBM: self._card_temps.hbm_snapshot(FAN_TEMP_STALE_SEC),
+            }
             with self._lock:
                 mode = self._update_wanted_duty(now, temps)
                 sensor, target = (self._sensor, self._target) if mode == _TARGET_MODE else (None, None)

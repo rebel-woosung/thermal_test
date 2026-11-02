@@ -1,7 +1,7 @@
 """Card thermal test — run every WORKLOADS_JSON workload in engine stage order for its
-test_time_sec under its fan_target (a fixed duty, or a Card / HBM temp held by FAN_TARGET_CONTROL),
-each after hw_cfg + hard reset and, outside the iteration stage, COOL_DOWN_SEC at max fan,
-collecting NPU/server/SMC metrics.
+test_time_sec under its fan_target (a fixed duty, or a Card / HBM temp held by each
+FAN_TARGET_CONTROLS law in turn), each after hw_cfg + hard reset and, outside the iteration stage,
+COOL_DOWN_SEC at max fan, collecting NPU/server/SMC metrics.
 
 Run (foreground):  cd thermal_test && uv run python main.py
 """
@@ -34,10 +34,12 @@ from monitoring.npu_collector import NpuMonitor
 from monitoring.server_collector import ServerMetricCollector
 from test_config import (
     COOL_DOWN_SEC,
-    FAN_TARGET_CONTROL,
+    FAN_TARGET_CONTROLS,
     SAFETY_CARD_TEMP_C,
     SAFETY_HBM_TEMP_C,
     SAFETY_RELEASE_C,
+    TEST_TIME_SEC,
+    TEST_UNIT_IDS,
     WORKLOAD_CODES,
 )
 
@@ -73,16 +75,18 @@ class HwCfgError(Exception):
 
 @dataclass(frozen=True)
 class _FanTarget:
-    """A workload's fan_target: a fixed ``duty``, or the group ``sensor`` temp held at ``temp_c``."""
+    """A workload's fan_target: a fixed ``duty``, or the group ``sensor`` temp held at ``temp_c``
+    by the ``control`` law."""
 
     duty: int | None
     sensor: str | None
     temp_c: float | None
+    control: str | None = None
 
     @property
     def phase(self) -> str:
         if self.sensor is not None:
-            return f"{self.sensor.upper()}_{self.temp_c:g}C"
+            return f"{self.sensor.upper()}_{self.temp_c:g}C_{self.control}"
         return "MAX" if self.duty >= FAN_MAX_DUTY else f"DUTY_{self.duty}"
 
 
@@ -105,7 +109,7 @@ def _run_session(run_dir: Path) -> None:
     if not runs:
         logger.error("no workloads in %s — aborting", WORKLOADS_JSON)
         return
-    target_control.validate([FAN_TARGET_CONTROL])
+    target_control.validate(FAN_TARGET_CONTROLS)
     work_sec = sum(wl["test_time_sec"] for _, wl, _ in runs)
     cool_downs = sum(_cools_down(tag) for tag, _, _ in runs)
     logger.info(
@@ -116,10 +120,12 @@ def _run_session(run_dir: Path) -> None:
         cool_downs * COOL_DOWN_SEC / 3600,
     )
     logger.info(
-        "test_config: WORKLOAD_CODES=%s, FAN_TARGET_CONTROL=%s, COOL_DOWN_SEC=%s,"
-        " SAFETY_CARD_TEMP_C=%s, SAFETY_HBM_TEMP_C=%s, SAFETY_RELEASE_C=%s",
+        "test_config: WORKLOAD_CODES=%s, TEST_UNIT_IDS=%s, TEST_TIME_SEC=%s, FAN_TARGET_CONTROLS=%s,"
+        " COOL_DOWN_SEC=%s, SAFETY_CARD_TEMP_C=%s, SAFETY_HBM_TEMP_C=%s, SAFETY_RELEASE_C=%s",
         WORKLOAD_CODES,
-        FAN_TARGET_CONTROL,
+        TEST_UNIT_IDS,
+        TEST_TIME_SEC,
+        FAN_TARGET_CONTROLS,
         COOL_DOWN_SEC,
         SAFETY_CARD_TEMP_C,
         SAFETY_HBM_TEMP_C,
@@ -174,14 +180,17 @@ def _run_session(run_dir: Path) -> None:
 
 # --- module-private helpers ------------------------------------------------
 def _load_runs() -> list[tuple[RowTag, dict, _FanTarget]]:
-    """Every workload run in engine stage order, only WORKLOAD_CODES when set; the iteration stage
-    repeats ``repeat_count`` times. A missing or malformed fan_target stops the session here."""
+    """Every workload run in engine stage order, only TEST_UNIT_IDS / WORKLOAD_CODES when set, each
+    for TEST_TIME_SEC when set; the iteration stage repeats ``repeat_count`` times and a temp
+    fan_target runs once per FAN_TARGET_CONTROLS law. A missing or malformed fan_target stops the
+    session here."""
     with open(WORKLOADS_JSON, encoding="utf-8") as f:
         config = json.load(f)
     unknown = set(config) - {key for key, _ in _STAGES}
     if unknown:
         logger.warning("%s: ignoring unknown stage(s) %s", WORKLOADS_JSON.name, sorted(unknown))
     runs: list[tuple[RowTag, dict, _FanTarget]] = []
+    unit_ids: set[int] = set()
     for key, stage_type in _STAGES:
         stage = config.get(key)
         if stage is None:
@@ -189,7 +198,18 @@ def _load_runs() -> list[tuple[RowTag, dict, _FanTarget]]:
         for i in range(1, stage.get("repeat_count", 1) + 1):
             for wl in stage["workloads"]:
                 fan_target = _fan_target(wl)
-                runs.append((RowTag(stage_type, wl["code"], i, phase=fan_target.phase), wl, fan_target))
+                unit_ids.add(wl["test_unit_id"])
+                if TEST_UNIT_IDS and wl["test_unit_id"] not in TEST_UNIT_IDS:
+                    continue
+                if TEST_TIME_SEC is not None:
+                    wl = {**wl, "test_time_sec": TEST_TIME_SEC}
+                controls = FAN_TARGET_CONTROLS if fan_target.sensor is not None else [None]
+                for control in controls:
+                    law_target = replace(fan_target, control=control)
+                    runs.append((RowTag(stage_type, wl["code"], i, phase=law_target.phase), wl, law_target))
+    missing_ids = sorted(set(TEST_UNIT_IDS) - unit_ids)
+    if missing_ids:
+        logger.warning("%s: TEST_UNIT_IDS %s not found — skipped", WORKLOADS_JSON.name, missing_ids)
     if WORKLOAD_CODES:
         missing = sorted(set(WORKLOAD_CODES) - {tag.workload_code for tag, _, _ in runs})
         if missing:
@@ -452,7 +472,7 @@ def _run_workload(
 
 def _start_fan(fan: FanController, fan_target: _FanTarget) -> None:
     if fan_target.sensor is not None:
-        fan.start_target(FAN_TARGET_CONTROL, fan_target.sensor, fan_target.temp_c)
+        fan.start_target(fan_target.control, fan_target.sensor, fan_target.temp_c)
     elif fan_target.duty >= FAN_MAX_DUTY:
         fan.hold_max()
     else:
