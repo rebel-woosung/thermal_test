@@ -1,7 +1,7 @@
 """pred_exp_tau3_k2 — pred_exp_k2 on TAU_SEC at 10 / 20 % re-fit from the CR13 fan-target run, 1 °C deadband,
-not below WARM_UP_MIN_DUTY for the first WARM_UP_SEC of load, then lowered at most RELEASE_MAX_DROP_PCT a step
-until the group temp first reaches its target, after which the Kalman filter assumes SETTLED_SENSOR_VAR_C2
-(same as the engine's _PredExpK2)."""
+controlling from the start of the test unit, not below WARM_UP_MIN_DUTY for the first WARM_UP_SEC, then lowered
+at most RELEASE_MAX_DROP_PCT a step until the group temp first reaches its target, after which the Kalman filter
+assumes SETTLED_SENSOR_VAR_C2 (same as the engine's _PredExpK2)."""
 
 from __future__ import annotations
 
@@ -11,8 +11,9 @@ from fan_control.target_control.pred_exp_k2 import PredExpK2Control
 
 class PredExpTau3K2Control(PredExpK2Control):
     """pred_exp_k2 with TAU_SEC 60 s at 10 % and 40 s at 20 % (30 % and up unchanged), DEADBAND_C 1.0,
-    a WARM_UP_MIN_DUTY floor for the first WARM_UP_SEC after the load starts and RELEASE_MAX_DROP_PCT
-    steps down after it until the target is first reached, then SETTLED_SENSOR_VAR_C2."""
+    control from the test unit's start instead of a temp rise, a WARM_UP_MIN_DUTY floor for the first
+    WARM_UP_SEC and RELEASE_MAX_DROP_PCT steps down after it until the target is first reached, then
+    SETTLED_SENSOR_VAR_C2."""
 
     DEADBAND_C = 1.0
     WARM_UP_SEC = 120
@@ -27,9 +28,12 @@ class PredExpTau3K2Control(PredExpK2Control):
     def reset(self, now: float, duty: int) -> None:
         super().reset(now, duty)
         self._now = now
-        self._load_started_at: float | None = None
+        self._started_at = now
         self._target_reached = False
         self.SENSOR_VAR_C2 = type(self).SENSOR_VAR_C2
+
+    def _load_started(self, valid: dict[str, float]) -> bool:
+        return True
 
     def update(self, now: float, temps: dict[str, float], targets: dict[str, float], duty: int) -> int:
         self._now = now
@@ -39,10 +43,8 @@ class PredExpTau3K2Control(PredExpK2Control):
         return super().update(now, temps, targets, duty)
 
     def _choose(self, cards: list[tuple[_Card, float]], duty: int) -> int:
-        if self._load_started_at is None:
-            self._load_started_at = self._now
         chosen = super()._choose(cards, duty)
-        if self._now - self._load_started_at < self.WARM_UP_SEC:
+        if self._now - self._started_at < self.WARM_UP_SEC:
             return max(self.WARM_UP_MIN_DUTY, chosen)
         if not self._target_reached:
             return max(chosen, duty - self.RELEASE_MAX_DROP_PCT)
